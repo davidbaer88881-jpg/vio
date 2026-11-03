@@ -21,29 +21,63 @@ export function toGeminiTools(tools) {
   return [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: toGeminiSchema(t.input_schema) })) }];
 }
 
-async function* streamGemini({ system, contents, tools, signal }) {
-  const url = `${config.geminiBase}/v1beta/models/${encodeURIComponent(config.geminiModel)}:streamGenerateContent?alt=sse`;
-  const res = await fetch(url, {
-    method: 'POST',
-    signal,
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': config.geminiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents,
-      tools: toGeminiTools(tools),
-      generationConfig: { maxOutputTokens: config.maxTokens * 2 },
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    let msg = body;
-    try { msg = JSON.parse(body).error?.message || body; } catch {}
-    const hint = res.status === 429 ? ' (Gratis-Limit erreicht – kurz warten oder morgen wieder)'
-      : res.status === 404 ? ` (Modell „${config.geminiModel}“ nicht gefunden – setze VIO_GEMINI_MODEL auf ein aktuelles Flash-Modell aus aistudio.google.com)` : '';
-    const err = new Error(`Gemini API ${res.status}${hint}: ${String(msg).slice(0, 300)}`);
-    err.status = res.status;
-    throw err;
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('abgebrochen'), { name: 'AbortError' })); }, { once: true });
+});
+
+/**
+ * Öffnet die Verbindung zu Gemini. Bei Überlastung (503) oder Gratis-Limit (429):
+ * erst kurz warten und neu versuchen, dann auf ein Ausweich-Modell wechseln.
+ * Das passiert, bevor Text gestreamt wird – der Nutzer sieht keine halben Antworten.
+ */
+async function openStream(body, signal) {
+  const models = [config.geminiModel, ...config.geminiFallbacks.filter((m) => m !== config.geminiModel)];
+  let lastErr;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch(`${config.geminiBase}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
+        method: 'POST', signal,
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': config.geminiKey },
+        body,
+      });
+      if (res.ok) return res;
+      lastErr = await toError(res, model);
+      if (res.status === 404) break;                 // Modell gibt's nicht → nächstes Modell
+      if (!RETRYABLE.has(res.status)) throw lastErr; // z. B. falscher Schlüssel → sofort melden
+      if (res.status === 429) break;                 // Limit gilt pro Modell → gleich nächstes Modell
+      if (attempt < 2) await sleep(config.retryDelayMs * (attempt + 1), signal);
+    }
   }
+  throw lastErr;
+}
+
+async function toError(res, model) {
+  const body = await res.text().catch(() => '');
+  let msg = body;
+  try { msg = JSON.parse(body).error?.message || body; } catch {}
+  const friendly = {
+    429: 'Das Gratis-Limit von Gemini ist gerade erreicht. Warte eine Minute – oder morgen ist es wieder frei.',
+    503: 'Gemini ist gerade überlastet (das passiert bei den Gratis-Modellen manchmal). Versuch es in ein paar Sekunden nochmal.',
+    500: 'Bei Gemini ist gerade ein Fehler aufgetreten. Versuch es gleich nochmal.',
+    404: `Das Modell „${model}“ gibt es nicht (mehr). Setze in Render VIO_GEMINI_MODEL auf ein aktuelles Flash-Modell.`,
+    400: `Gemini hat die Anfrage abgelehnt: ${String(msg).slice(0, 200)}`,
+    401: 'Der Gemini-Schlüssel ist ungültig. Prüfe GEMINI_API_KEY in Render.',
+    403: 'Der Gemini-Schlüssel hat keine Berechtigung. Prüfe GEMINI_API_KEY in Render.',
+  }[res.status];
+  const err = new Error(friendly || `Gemini-Fehler ${res.status}: ${String(msg).slice(0, 200)}`);
+  err.status = res.status;
+  return err;
+}
+
+async function* streamGemini({ system, contents, tools, signal }) {
+  const res = await openStream(JSON.stringify({
+    systemInstruction: { parts: [{ text: system }] },
+    contents,
+    tools: toGeminiTools(tools),
+    generationConfig: { maxOutputTokens: config.maxTokens * 2 },
+  }), signal);
 
   const parts = [];
   const decoder = new TextDecoder();

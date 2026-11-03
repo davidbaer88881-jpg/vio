@@ -9,6 +9,9 @@ export const config = {
   geminiKey: process.env.GEMINI_API_KEY || '',
   geminiBase: (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, ''),
   geminiModel: process.env.VIO_GEMINI_MODEL || 'gemini-flash-latest',
+  // Ausweich-Modelle, falls das Hauptmodell überlastet ist oder das Gratis-Limit erreicht hat
+  geminiFallbacks: (process.env.VIO_GEMINI_FALLBACKS ?? 'gemini-flash-lite-latest').split(',').map((s) => s.trim()).filter(Boolean),
+  retryDelayMs: Number(process.env.VIO_RETRY_DELAY_MS ?? 1500),
 
   // KI-Gehirn 2: Claude (kostenpflichtig, Guthaben auf console.anthropic.com)
   apiKey: process.env.ANTHROPIC_API_KEY || '',

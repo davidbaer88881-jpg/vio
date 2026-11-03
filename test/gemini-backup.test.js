@@ -23,10 +23,19 @@ before(async () => {
     let b = ''; for await (const c of req) b += c;
     const json = JSON.parse(b);
     geminiRequests.push({ url: req.url, headers: req.headers, json });
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
     const last = json.contents.at(-1);
     const isFnResp = last.parts.some((p) => p.functionResponse);
     const text = last.parts.map((p) => p.text || '').join('');
+    if (/stresstest/i.test(text) && req.url.includes('gemini-test:')) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { code: 503, message: 'This model is currently experiencing high demand.' } }));
+    }
+    if (/stresstest/i.test(text)) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(sseLine({ candidates: [{ content: { role: 'model', parts: [{ text: 'Läuft trotzdem!' }] } }] }));
+      return res.end();
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
     if (!isFnResp && /zahnarzt/i.test(text)) {
       res.write(sseLine({ candidates: [{ content: { role: 'model', parts: [{ text: 'Alles klar, ' }] } }] }));
       res.write(sseLine({ candidates: [{ content: { role: 'model', parts: [
@@ -62,6 +71,7 @@ before(async () => {
 
   Object.assign(process.env, {
     GEMINI_API_KEY: 'gem-key', GEMINI_BASE_URL: `http://127.0.0.1:${gp}`, VIO_GEMINI_MODEL: 'gemini-test',
+    VIO_GEMINI_FALLBACKS: 'gemini-lite-test', VIO_RETRY_DELAY_MS: '5',
     SUPABASE_URL: `http://127.0.0.1:${sp}`, SUPABASE_SECRET_KEY: 'sb_secret_test',
     VIO_INITIAL_PASSWORD: 'richtig-langes-passwort', VIO_INSECURE_COOKIES: '1', VIO_DB_PATH: dbPath,
   });
@@ -124,6 +134,16 @@ test('Budget-Regeln gelten auch mit Gemini (15 € genannt, 13,90 € → freige
   const pol = ev.find((e) => e.event === 'tool' && e.data.type === 'policy');
   assert.equal(pol.data.decision, 'allow');
   assert.match(ev.filter((e) => e.event === 'delta').map((e) => e.data.text).join(''), /noch nicht eingerichtet/);
+});
+
+test('Gemini überlastet (503): 3 Versuche, dann automatisch Ausweich-Modell', async () => {
+  const before = geminiRequests.length;
+  const ev = await chat('Stresstest bitte');
+  const urls = geminiRequests.slice(before).map((r) => r.url);
+  assert.equal(urls.filter((u) => u.includes('gemini-test:')).length, 3);
+  assert.equal(urls.filter((u) => u.includes('gemini-lite-test:')).length, 1);
+  assert.equal(ev.filter((e) => e.event === 'delta').map((e) => e.data.text).join(''), 'Läuft trotzdem!');
+  assert.ok(!ev.some((e) => e.event === 'error'));
 });
 
 test('Sicherung landet in Supabase und lässt sich auf einem „neuen Server“ wiederherstellen', async () => {

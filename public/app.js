@@ -76,7 +76,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.2.3';
+export const VERSION = '0.3.0';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -95,7 +95,9 @@ const routes = {
 };
 
 async function route() {
-  const [, name = '', arg] = location.hash.replace(/^#/, '').split('/');
+  const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
+  state.query = new URLSearchParams(query);
+  const [, name = '', arg] = path.split('/');
   const fn = routes[name] || renderHome;
   document.querySelectorAll('[data-nav]').forEach((a) => {
     const n = a.dataset.nav;
@@ -169,7 +171,9 @@ async function renderHome() {
       <div class="list">${data.pending_facts.map(factRow).join('')}</div>` : ''}
 
     <h2>Nächste Termine</h2>
-    <a class="empty block" href="#/calendar">${ICON.cal.replace('<svg', '<svg class="ico-inline"')}Google Kalender ist noch nicht verbunden.</a>
+    ${data.events === null
+      ? `<a class="empty block" href="#/apps">${ICON.cal.replace('<svg', '<svg class="ico-inline"')}Google Kalender ist noch nicht verbunden – jetzt verbinden.</a>`
+      : `<div class="list">${data.events.length ? data.events.map(eventRow).join('') : '<div class="empty">Keine Termine in den nächsten 7 Tagen.</div>'}</div>`}
 
     <h2>Offene Aufgaben</h2>
     <div class="list">
@@ -206,7 +210,7 @@ function connChip(c) {
 function taskRow(t) {
   return `<div class="row" data-task="${t.id}">
     <button class="check ${t.done ? 'done' : ''}" data-toggle="${t.id}" data-done="${t.done ? 1 : 0}" aria-label="Erledigt">${t.done ? ICON.check : ''}</button>
-    <div class="grow"><div class="title ${t.done ? 'done-text' : ''}">${esc(t.title)}</div>${t.due_at ? `<div class="meta">${esc(fmtDue(t.due_at))}</div>` : ''}</div>
+    <div class="grow"><div class="title ${t.done ? 'done-text' : ''}">${esc(t.title)}</div>${t.due_at ? `<div class="meta">${esc(fmtDue(t.due_at))}${t.repeat ? ` · 🔁 ${REPEAT_LABEL[t.repeat] || ''}` : ''}</div>` : ''}</div>
   </div>`;
 }
 function bindTaskRows(after) {
@@ -296,12 +300,13 @@ function renderMessages() {
     return;
   }
   box.innerHTML = state.messages.map((m, i) => {
-    if (m.role === 'event') return `<div class="event ${m.kind || ''}">${m.html}</div>`;
+    if (m.role === 'event') return m.card ? `<div class="action-card">${m.html}</div>` : `<div class="event ${m.kind || ''}">${m.html}</div>`;
     if (m.role === 'user') return `<div class="msg user">${esc(m.content).replace(/\n/g, '<br>')}</div>`;
     return `<div class="msg assistant ${m.typing ? 'typing' : ''}" data-i="${i}">${md(m.content)}${!m.typing && m.content ? `<button class="speak" data-speak="${i}" aria-label="Vorlesen">${ICON.speaker}</button>` : ''}</div>`;
   }).join('');
-  box.querySelectorAll('[data-speak]').forEach((b) => (b.onclick = () => { voice.stopSpeaking(); voice.speak(state.messages[b.dataset.speak].content, state.settings); }));
+  box.querySelectorAll('[data-speak]').forEach((b) => (b.onclick = () => { voice.stopSpeaking(); voice.say(state.messages[b.dataset.speak].content, state.settings); }));
   bindFactRows(box, () => {});
+  bindActionCards(box);
   box.querySelectorAll('[data-approve],[data-reject]').forEach((b) => b.addEventListener('click', () => {
     b.closest('.event').innerHTML = b.dataset.approve ? '✓ Gemerkt' : 'Okay, nicht gemerkt';
   }));
@@ -392,7 +397,14 @@ async function sendMessage(text, viaVoice) {
 function insertEvent(reply, data) {
   const idx = state.messages.indexOf(reply);
   let ev;
-  if (data.type === 'task') ev = { kind: 'allow', html: `${ICON.check.replace('<svg', '<svg class="ico-sm"')} Aufgabe notiert: ${esc(data.title)}` };
+  if (data.type === 'task') ev = { kind: 'allow', html: `${ICON.check.replace('<svg', '<svg class="ico-sm"')} Aufgabe notiert: ${esc(data.title)}${data.due_at ? ` · ${esc(fmtDue(data.due_at))}` : ''}${data.repeat ? ` · ${REPEAT_LABEL[data.repeat]}` : ''}` };
+  else if (data.type === 'calendar') ev = {
+    kind: data.conflicts?.length ? 'ask' : 'allow',
+    html: `📅 Termin ${data.action === 'created' ? 'eingetragen' : 'geändert'}: <strong>${esc(data.title)}</strong> · ${esc(fmtEventTime(data))}${data.conflicts?.length ? `<br>⚠️ Überschneidung mit: ${esc(data.conflicts.join(', '))}` : ''}`,
+  };
+  else if (data.type === 'message') ev = { card: true, html: actionCard(data) };
+  else if (data.type === 'call') ev = { card: true, html: actionCard(data) };
+  else if (data.type === 'draft') ev = { card: true, html: `<div class="ac-head">✉️ E-Mail-Entwurf</div><div class="meta">An: ${esc(data.to)}<br>Betreff: ${esc(data.subject)}</div><div class="ac-body">${esc(data.body).replace(/\n/g, '<br>')}</div><div class="meta">Sag „Ja, schick ab“, wenn er so raus soll.</div>` };
   else if (data.type === 'fact') ev = data.status === 'pending'
     ? { html: `Merken? „${esc(data.text)}“ <button class="btn small primary" data-approve="${data.id}">Ja</button><button class="btn small" data-reject="${data.id}">Nein</button>` }
     : { html: `🧠 Gemerkt: ${esc(data.text)}` };
@@ -400,7 +412,7 @@ function insertEvent(reply, data) {
     const k = { allow: 'allow', deny: 'deny', ask_user: 'ask', need_price: 'ask' }[data.decision] || '';
     const label = { allow: 'Freigegeben', deny: 'Blockiert', ask_user: 'Rückfrage nötig', need_price: 'Preis erst erfragen' }[data.decision];
     ev = { kind: k, html: `${ICON.shield.replace('<svg', '<svg class="ico-sm"')} Budget-Regel: <strong>${esc(label)}</strong> – ${esc(data.reason)}` };
-  } else ev = { html: esc(data.label || 'Aktion ausgeführt') };
+  } else ev = { kind: data.kind || '', html: esc(data.label || 'Aktion ausgeführt') };
   state.messages.splice(idx, 0, { role: 'event', ...ev });
   renderMessages();
 }
@@ -453,7 +465,7 @@ async function renderTasks() {
     <p class="sub">Sag Vio einfach, was zu tun ist – oder trag es hier ein.</p>
     <form class="ask" id="add-task">
       <input class="input" name="title" placeholder="Neue Aufgabe …" autocomplete="off">
-      <input class="input" name="due" type="date" data-date>
+      <input class="input" name="due" type="datetime-local" data-date>
       <button class="icon-btn send" aria-label="Hinzufügen">${ICON.plus}</button>
     </form>
     <h2>Offen (${open.length})</h2>
@@ -474,19 +486,63 @@ function taskRowWithDelete(t) { return taskRow(t).replace(/<\/div>\s*$/, `<butto
 //  Apps & Verbindungen
 // ============================================================================
 async function renderApps() {
-  const conns = await api('/api/connections');
-  const label = { connected: 'Verbunden', missing_key: 'Schlüssel fehlt', planned: 'Geplant' };
+  const { connections, google, telegram } = await api('/api/connections');
+  if (state.query?.get('google') === 'ok') toast('Google ist verbunden 🎉');
+  if (state.query?.get('google_error')) toast('Google: ' + state.query.get('google_error'), 6000);
+  const LABEL = { connected: 'Verbunden', available: 'Bereit zum Verbinden', needs_setup: 'Einrichtung nötig', limited: 'Vorbereiten', missing_key: 'Schlüssel fehlt', planned: 'Geplant' };
+  const DOT = { connected: 'ok', limited: 'ok', available: 'warn', missing_key: 'warn' };
   view().innerHTML = `
     <h1>Apps & Verbindungen</h1>
-    <p class="sub">Hier siehst du ehrlich, was Vio schon kann – und was noch kommt.</p>
-    <div class="list">
-      ${conns.map((c) => `<div class="row">
-        <span class="dot ${c.status === 'connected' ? 'ok' : c.status === 'missing_key' ? 'warn' : 'off'}"></span>
-        <div class="grow"><div class="title">${esc(c.name)}</div><div class="meta">${c.status === 'planned' ? `Kommt in Phase ${c.phase}` : label[c.status]}</div></div>
-        <span class="badge">${label[c.status]}</span></div>`).join('')}
+    <p class="sub">Hier verbindest du Vio mit deinen Diensten. Alles ehrlich: Was hier nicht grün ist, kann Vio auch nicht.</p>
+
+    <h2>Google (Kalender & Gmail)</h2>
+    <div class="card">
+      ${google.connected
+        ? `<div class="row-flat"><span class="dot ok"></span><div class="grow">Verbunden als <strong>${esc(google.email || 'Google-Konto')}</strong></div></div>
+           <div class="btn-row"><a class="btn small" href="#/calendar">Kalender ansehen</a><button class="btn small danger" id="g-off">Trennen</button></div>`
+        : google.configured
+          ? `<p class="meta">Vio bekommt Zugriff auf deinen Kalender und kann Mails lesen und – nur nach deiner Zustimmung – senden.</p><button class="btn primary" id="g-on">Mit Google verbinden</button>`
+          : `<p class="meta">Auf dem Server fehlen noch GOOGLE_CLIENT_ID und GOOGLE_CLIENT_SECRET. Die Anleitung dazu steht in docs/INSTALLATION.md (Abschnitt „Google verbinden“).</p>`}
     </div>
-    <h2>Später geplant</h2>
-    <div class="status-chips">${['Google Maps', 'Google Drive', 'Google Tasks', 'Google Keep', 'Spotify', 'Amazon (nur Suche)', 'Wetter', 'Banking (nur lesen)'].map((n) => `<span class="chip"><span class="dot off"></span>${n}</span>`).join('')}</div>`;
+
+    <h2>Telegram</h2>
+    <div class="card">
+      ${telegram.linked
+        ? `<div class="row-flat"><span class="dot ok"></span><div class="grow">Verknüpft${telegram.name ? ` mit <strong>${esc(telegram.name)}</strong>` : ''}. Erinnerungen und die Tagesübersicht kommen per Telegram.</div></div>
+           ${telegram.groups.length ? `<p class="meta">Gruppen, in denen Vio schreiben darf: ${esc(telegram.groups.join(', '))}</p>` : '<p class="meta">Tipp: Lade deinen Bot in eine Telegram-Gruppe ein, dann kann Vio dort Nachrichten posten.</p>'}
+           <div class="btn-row"><button class="btn small" id="t-test">Test-Nachricht</button><button class="btn small" id="t-brief">Tagesübersicht jetzt</button><button class="btn small danger" id="t-off">Trennen</button></div>`
+        : telegram.configured
+          ? `<p class="meta">Tippe auf den Knopf, Telegram öffnet sich – dort auf <strong>Starten</strong> tippen. Fertig.</p><button class="btn primary" id="t-on">Telegram verbinden</button>`
+          : `<p class="meta">Auf dem Server fehlt noch TELEGRAM_BOT_TOKEN. Die Anleitung steht in docs/INSTALLATION.md (Abschnitt „Telegram verbinden“).</p>`}
+    </div>
+
+    <h2>Alle Verbindungen</h2>
+    <div class="list">
+      ${connections.map((c) => `<div class="row">
+        <span class="dot ${DOT[c.status] || 'off'}"></span>
+        <div class="grow"><div class="title">${esc(c.name)}</div>${c.detail ? `<div class="meta">${esc(c.detail)}</div>` : ''}</div>
+        <span class="badge">${LABEL[c.status] || c.status}</span></div>`).join('')}
+    </div>
+    <h2>Später möglich</h2>
+    <div class="status-chips">${['Selbst telefonieren (kostenpflichtig)', 'Websuche & Preisalarm', 'Google Maps', 'Google Drive', 'Spotify', 'Wetter', 'Banking (nur lesen)'].map((n) => `<span class="chip"><span class="dot off"></span>${n}</span>`).join('')}</div>`;
+
+  $('#g-on')?.addEventListener('click', async () => { try { location.href = (await api('/api/google/connect', { method: 'POST' })).url; } catch (e) { toast(e.message); } });
+  $('#g-off')?.addEventListener('click', async () => { if (!confirm('Google-Verbindung trennen?')) return; await api('/api/google/disconnect', { method: 'POST' }); renderApps(); });
+  $('#t-on')?.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/telegram/link', { method: 'POST' });
+      if (!window.open(r.url, '_blank')) location.href = r.url;
+      toast('In Telegram auf „Starten“ tippen, dann hierher zurückkommen.', 7000);
+      const poll = setInterval(async () => {
+        if (location.hash.split('?')[0] !== '#/apps') return clearInterval(poll);
+        const st = await api('/api/connections').catch(() => null);
+        if (st?.telegram.linked) { clearInterval(poll); toast('Telegram ist verbunden 🎉'); renderApps(); }
+      }, 3000);
+    } catch (e) { toast(e.message); }
+  });
+  $('#t-test')?.addEventListener('click', async () => { try { await api('/api/telegram/test', { method: 'POST' }); toast('Gesendet – schau in Telegram'); } catch (e) { toast(e.message); } });
+  $('#t-brief')?.addEventListener('click', async () => { try { await api('/api/briefing', { method: 'POST' }); toast('Tagesübersicht gesendet'); } catch (e) { toast(e.message); } });
+  $('#t-off')?.addEventListener('click', async () => { if (!confirm('Telegram trennen?')) return; await api('/api/telegram/unlink', { method: 'POST' }); renderApps(); });
 }
 
 // ============================================================================
@@ -494,9 +550,9 @@ async function renderApps() {
 // ============================================================================
 function renderMore() {
   const tiles = [
-    ['calendar', ICON.cal, 'Kalender', 'Phase 7'],
+    ['calendar', ICON.cal, 'Kalender', 'Tag & Woche'],
     ['reminders', ICON.bell, 'Erinnerungen', 'Fällige Aufgaben'],
-    ['phone', ICON.phone, 'Telefon', 'Phase 9'],
+    ['phone', ICON.phone, 'Telefon', 'Anrufe vorbereiten'],
     ['memory', ICON.brain, 'Gedächtnis', 'Was Vio über dich weiß'],
     ['settings', ICON.gear, 'Einstellungen', 'Stimme, Budget, Sicherheit'],
     ['history', ICON.history, 'Verlauf', 'Alte Gespräche'],
@@ -508,23 +564,96 @@ function renderMore() {
   $('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); renderLogin(); };
 }
 
-function placeholder(title, icon, text, phase) {
+const REPEAT_LABEL = { daily: 'täglich', weekdays: 'werktags', weekly: 'wöchentlich', monthly: 'monatlich', yearly: 'jährlich' };
+const dayKey = (iso, allDay) => (allDay ? iso.slice(0, 10) : new Date(iso).toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' }));
+function fmtEventTime(e) {
+  if (e.all_day) return new Date(e.start + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' }) + ' · ganztägig';
+  return new Date(e.start).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+function eventRow(e) {
+  const time = e.all_day ? 'ganztägig' : `${new Date(e.start).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' })}–${new Date(e.end).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' })}`;
+  return `<div class="row"><div class="ev-time">${time}</div><div class="grow"><div class="title">${esc(e.title)}</div><div class="meta">${esc(e.all_day ? fmtEventTime(e) : new Date(e.start).toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin', weekday: 'long', day: 'numeric', month: 'long' }))}${e.location ? ' · ' + esc(e.location) : ''}</div></div></div>`;
+}
+
+async function renderCalendar() {
+  const now = new Date();
+  const ymd = (d) => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+  const r = await api(`/api/calendar?from=${ymd(now)} 00:00&to=${ymd(new Date(Date.now() + 7 * 864e5))} 23:59`);
+  const head = `<div class="chat-head"><a class="icon-btn" href="#/more">${ICON.back}</a><div class="grow">Kalender</div></div>`;
+  if (!r.connected) {
+    view().innerHTML = `${head}<div class="card placeholder"><div class="ph-icon">${ICON.cal}</div><p>Verbinde deinen Google Kalender, dann siehst du hier Tages- und Wochenübersicht und Vio kann Termine für dich eintragen.</p><a class="btn primary" href="#/apps">Jetzt verbinden</a></div>`;
+    return;
+  }
+  const groups = {};
+  for (const e of r.events) (groups[dayKey(e.start, e.all_day)] ||= []).push(e);
+  const today = ymd(now), tomorrow = ymd(new Date(Date.now() + 864e5));
+  const dayLabel = (k) => (k === today ? 'Heute' : k === tomorrow ? 'Morgen' : new Date(k + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' }));
+  // Überschneidungen markieren
+  const overlaps = new Set();
+  const timed = r.events.filter((e) => !e.all_day);
+  for (let i = 0; i < timed.length; i++) for (let j = i + 1; j < timed.length; j++) {
+    if (Date.parse(timed[i].start) < Date.parse(timed[j].end) && Date.parse(timed[j].start) < Date.parse(timed[i].end)) { overlaps.add(timed[i].id); overlaps.add(timed[j].id); }
+  }
+  view().innerHTML = `${head}
+    <p class="sub">Die nächsten 7 Tage. Neue Termine? Sag es einfach Vio – z. B. „Trag mir Freitag 15 Uhr Zahnarzt ein“.</p>
+    ${Object.keys(groups).length ? Object.entries(groups).map(([k, evs]) => `<h2>${dayLabel(k)}</h2><div class="list">${evs.map((e) => eventRow(e).replace('<div class="row">', `<div class="row${overlaps.has(e.id) ? ' conflict' : ''}">`)).join('')}</div>`).join('') : '<div class="empty">Keine Termine in den nächsten 7 Tagen. 🏖️</div>'}
+    ${overlaps.size ? '<p class="sub mt12">⚠️ Rot markierte Termine überschneiden sich.</p>' : ''}
+    <div class="btn-row mt12"><a class="btn" href="#/chat">Termin mit Vio anlegen</a></div>`;
+}
+
+function renderPhone() {
   view().innerHTML = `
-    <div class="chat-head"><a class="icon-btn" href="#/more">${ICON.back}</a><div class="grow">${title}</div></div>
-    <div class="card placeholder">
-      <div class="ph-icon">${icon}</div>
-      <p>${text}</p>
-      <span class="badge">Noch nicht verbunden · Phase ${phase}</span>
+    <div class="chat-head"><a class="icon-btn" href="#/more">${ICON.back}</a><div class="grow">Telefon</div></div>
+    <div class="card">
+      <p><strong>So hilft dir Vio beim Telefonieren:</strong></p>
+      <p class="meta">Sag z. B. „Ich will bei der Werkstatt Müller einen Termin für den Ölwechsel ausmachen“. Vio schreibt dir einen kurzen Gesprächsleitfaden und gibt dir einen Knopf, der dein Telefon mit der Nummer öffnet. Danach kannst du ihm das Ergebnis sagen – er trägt den Termin ein.</p>
+      <p class="meta">Dass Vio <strong>selbst</strong> anruft (als KI erkennbar, ohne heimliche Aufnahme, innerhalb deines Budgets), geht nur mit einem kostenpflichtigen Telefondienst. Das kann später eingebaut werden.</p>
+      <div class="btn-row"><button class="btn primary" id="call-ask">Anruf vorbereiten</button></div>
+    </div>`;
+  $('#call-ask').onclick = () => { newConversation(); location.hash = '#/chat'; setTimeout(() => { const i = $('#input'); if (i) { i.value = 'Bereite einen Anruf vor: '; i.focus(); } }, 80); };
+}
+
+/** Karte für vorbereitete Nachrichten (WhatsApp/SMS) und Anrufe. */
+function actionCard(d) {
+  if (d.type === 'call') {
+    return `<div class="ac-head">📞 Anruf vorbereitet${d.contact_name ? `: ${esc(d.contact_name)}` : ''}</div>
+      ${d.purpose ? `<div class="meta">${esc(d.purpose)}</div>` : ''}
+      <div class="ac-body">${esc(d.script).replace(/\n/g, '<br>')}</div>
+      <div class="btn-row">${d.phone ? `<a class="btn primary small" href="tel:${esc(d.phone)}">Jetzt anrufen</a>` : '<button class="btn primary small" data-pick="tel">Kontakt wählen & anrufen</button>'}</div>`;
+  }
+  const app = d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS';
+  return `<div class="ac-head">${d.channel === 'whatsapp' ? '💬' : '✉️'} ${app}${d.contact_name ? ` an ${esc(d.contact_name)}` : ''}</div>
+    <div class="ac-body">${esc(d.text).replace(/\n/g, '<br>')}</div>
+    <div class="btn-row" data-text="${esc(d.text)}" data-channel="${d.channel}">
+      ${d.phone ? `<a class="btn primary small" href="${esc(d.url)}" target="_blank" rel="noopener">In ${app} öffnen</a>` : `<button class="btn primary small" data-pick="${d.channel}">Kontakt wählen & öffnen</button>${d.channel === 'whatsapp' ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">In WhatsApp wählen</a>` : ''}`}
+      <button class="btn small" data-copy>Text kopieren</button>
     </div>`;
 }
-function renderCalendar() { return placeholder('Kalender', ICON.cal, 'Hier erscheinen bald deine Google-Kalender-Termine mit Tages- und Wochenübersicht und Kollisionswarnungen.', 7); }
-function renderPhone() { return placeholder('Telefon', ICON.phone, 'Hier kann Vio bald für dich anrufen – als KI erkennbar, ohne heimliche Aufnahme, streng innerhalb deines Budgets.', 9); }
+
+function bindActionCards(root) {
+  root.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.closest('[data-text]').dataset.text); toast('Text kopiert'); } catch { toast('Kopieren nicht möglich'); }
+  }));
+  root.querySelectorAll('[data-pick]').forEach((b) => (b.onclick = async () => {
+    const kind = b.dataset.pick;
+    if (!('contacts' in navigator)) { toast('Kontaktauswahl wird hier nicht unterstützt – nenne Vio die Nummer.'); return; }
+    try {
+      const [c] = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+      const tel = (c?.tel?.[0] || '').replace(/[^\d+]/g, '');
+      if (!tel) { toast('Der Kontakt hat keine Nummer.'); return; }
+      if (kind === 'tel') { location.href = `tel:${tel}`; return; }
+      const text = b.closest('[data-text]').dataset.text;
+      const intl = tel.startsWith('+') ? tel.slice(1) : tel.startsWith('00') ? tel.slice(2) : tel.startsWith('0') ? '49' + tel.slice(1) : tel;
+      location.href = kind === 'whatsapp' ? `https://wa.me/${intl}?text=${encodeURIComponent(text)}` : `sms:${tel}?body=${encodeURIComponent(text)}`;
+    } catch { /* abgebrochen */ }
+  }));
+}
 
 async function renderReminders() {
   const tasks = (await api('/api/tasks')).filter((t) => !t.done && t.due_at);
   view().innerHTML = `
     <div class="chat-head"><a class="icon-btn" href="#/more">${ICON.back}</a><div class="grow">Erinnerungen</div></div>
-    <p class="sub">Aufgaben mit Fälligkeit. Push-Benachrichtigungen aufs Handy folgen mit dem Kalender-Modul (Phase 7).</p>
+    <p class="sub">Aufgaben mit Uhrzeit schickt dir Vio pünktlich per Telegram (wenn verbunden). Sag z. B. „Erinner mich jeden Montag um 7 an den Müll“.</p>
     <div class="list">${tasks.length ? tasks.map(taskRow).join('') : '<div class="empty">Keine fälligen Erinnerungen. Sag z. B. „Erinner mich Freitag an den Zahnarzt“.</div>'}</div>`;
   bindTaskRows(renderReminders);
 }
@@ -549,6 +678,7 @@ async function renderSettings() {
   const { settings: s, protected: p, providers, active_provider: activeP, backup } = await api('/api/settings');
   state.settings = s;
   const voices = voice.germanVoices();
+  const gvoices = (await api('/api/voices').catch(() => ({ gemini: [] }))).gemini;
   const auto = voice.pickVoice('');
   const seg = (key, opts) => `<div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${s[key] === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 
@@ -574,16 +704,29 @@ async function renderSettings() {
       <div class="field"><label>Antworten vorlesen</label>${seg('tts_mode', [['voice', 'Bei Sprache'], ['always', 'Immer'], ['never', 'Nie']])}</div>
       <div class="field inline"><div><label for="hf">Freisprechmodus</label><div class="hint">Nach Vios Antwort automatisch wieder zuhören.</div></div>
         <label class="switch"><input type="checkbox" id="hf" ${s.handsfree ? 'checked' : ''}><span></span></label></div>
-      <div class="field"><label for="voice">Stimme</label>
+      <div class="field"><label>Stimme</label>${seg('voice_engine', [['gemini', 'Natürlich (Gemini)'], ['device', 'Handy-Stimme']])}
+        <div class="hint">„Natürlich“ klingt deutlich besser, braucht aber 1–2 Sekunden länger. Ist das Gratis-Limit erreicht, springt automatisch die Handy-Stimme ein.</div></div>
+      <div class="field ${s.voice_engine === 'gemini' ? '' : 'hidden-field'}" id="gv-field"><label for="gvoice">Natürliche Stimme</label>
+        <select class="input" id="gvoice">${(gvoices || []).map((v) => `<option value="${esc(v.id)}" ${v.id === s.gemini_voice ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
+      <div class="field ${s.voice_engine === 'device' ? '' : 'hidden-field'}" id="dv-field"><label for="voice">Handy-Stimme</label>
         <select class="input" id="voice">
           <option value="">Automatisch${auto ? ` (${esc(auto.name)})` : ''}</option>
           ${voices.map((v) => `<option value="${esc(v.name)}" ${v.name === s.voice_name ? 'selected' : ''}>${esc(v.name)}${v.localService ? '' : ' · online'}</option>`).join('')}
         </select>
         <div class="hint">${voices.length ? 'Wähle eine männliche deutsche Stimme. Weitere Stimmen: Android-Einstellungen → System → Sprachen → Text-in-Sprache → Google → Deutsch → Stimme.' : 'Keine deutschen Stimmen gefunden – installiere sie in den Android-Einstellungen (Text-in-Sprache).'}</div></div>
       <div class="field"><label>Tempo <span class="hint" id="rate-v">${s.speech_rate.toFixed(2)}</span></label><input type="range" id="rate" min="0.6" max="1.6" step="0.05" value="${s.speech_rate}"></div>
-      <div class="field"><label>Stimmhöhe <span class="hint" id="pitch-v">${s.speech_pitch.toFixed(2)}</span></label><input type="range" id="pitch" min="0.5" max="1.5" step="0.05" value="${s.speech_pitch}">
+      <div class="field ${s.voice_engine === 'device' ? '' : 'hidden-field'}" id="pitch-field"><label>Stimmhöhe <span class="hint" id="pitch-v">${s.speech_pitch.toFixed(2)}</span></label><input type="range" id="pitch" min="0.5" max="1.5" step="0.05" value="${s.speech_pitch}">
         <div class="hint">Etwas tiefer klingt männlicher.</div></div>
       <div class="field"><button class="btn" id="test-voice">${ICON.speaker} Stimme testen</button></div>
+    </div>
+
+    <h2>Erinnerungen</h2>
+    <div class="settings-group">
+      <div class="field inline"><div><label for="tgrem">Erinnerungen per Telegram</label><div class="hint">Aufgaben mit Uhrzeit kommen pünktlich als Telegram-Nachricht.</div></div>
+        <label class="switch"><input type="checkbox" id="tgrem" ${s.telegram_reminders ? 'checked' : ''}><span></span></label></div>
+      <div class="field"><label for="brief">Tagesübersicht am Morgen</label>
+        <select class="input" id="brief">${['', '06:00', '06:30', '07:00', '07:30', '08:00', '08:30', '09:00'].map((t) => `<option value="${t}" ${s.morning_briefing === t ? 'selected' : ''}>${t ? t + ' Uhr' : 'Aus'}</option>`).join('')}</select>
+        <div class="hint">Termine und Aufgaben des Tages per Telegram.</div></div>
     </div>
 
     <h2>Budget & Sicherheit</h2>
@@ -604,17 +747,20 @@ async function renderSettings() {
   document.querySelectorAll('[data-seg]').forEach((g) => g.querySelectorAll('button').forEach((b) => (b.onclick = async () => {
     g.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
     await save({ [g.dataset.seg]: b.dataset.v });
-    if (g.dataset.seg === 'ai_provider') renderSettings();
+    if (g.dataset.seg === 'ai_provider' || g.dataset.seg === 'voice_engine') renderSettings();
   })));
   $('#hf').onchange = (e) => save({ handsfree: e.target.checked });
   $('#voice').onchange = (e) => save({ voice_name: e.target.value });
+  $('#gvoice')?.addEventListener('change', (e) => save({ gemini_voice: e.target.value }));
+  $('#brief')?.addEventListener('change', (e) => save({ morning_briefing: e.target.value }).then(() => toast(e.target.value ? `Tagesübersicht um ${e.target.value}` : 'Tagesübersicht aus')));
+  $('#tgrem')?.addEventListener('change', (e) => save({ telegram_reminders: e.target.checked }));
   $('#rate').oninput = (e) => ($('#rate-v').textContent = Number(e.target.value).toFixed(2));
   $('#rate').onchange = (e) => save({ speech_rate: Number(e.target.value) });
   $('#pitch').oninput = (e) => ($('#pitch-v').textContent = Number(e.target.value).toFixed(2));
   $('#pitch').onchange = (e) => save({ speech_pitch: Number(e.target.value) });
   $('#test-voice').onclick = () => {
-    const cur = { ...state.settings, voice_name: $('#voice').value, speech_rate: Number($('#rate').value), speech_pitch: Number($('#pitch').value) };
-    voice.stopSpeaking(); voice.speak(`Hey ${cur.user_name}, ich bin Vio. So klinge ich gerade. Passt das?`, cur);
+    const cur = { ...state.settings, voice_name: $('#voice').value, gemini_voice: $('#gvoice')?.value || state.settings.gemini_voice, speech_rate: Number($('#rate').value), speech_pitch: Number($('#pitch').value) };
+    voice.stopSpeaking(); voice.say(`Hey ${cur.user_name}, ich bin Vio. So klinge ich gerade. Passt das?`, cur);
   };
   $('#cap-save').onclick = async () => {
     try {

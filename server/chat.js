@@ -1,7 +1,9 @@
 import { availableProviders, config } from './config.js';
 import { getSettings } from './db.js';
 import { buildSystemPrompt } from './persona.js';
-import { TOOL_DEFS, runTool } from './tools.js';
+import { getToolDefs, runTool } from './tools.js';
+import { googleStatus } from './google.js';
+import { telegramStatus } from './telegram.js';
 import { getConnections } from './connections.js';
 import * as claude from './providers/claude.js';
 import * as gemini from './providers/gemini.js';
@@ -20,7 +22,7 @@ export const providerLabel = (p) => (p === 'claude' ? `Claude (${config.model})`
 /**
  * Führt einen kompletten Gesprächszug aus und streamt Events über send(event, data).
  */
-export async function runChatTurn(db, { conversationId, text }, send, signal) {
+export async function runChatTurn(db, { conversationId, text, channel = 'app' }, send, signal) {
   text = String(text || '').trim().slice(0, 8000);
   if (!text) throw new Error('Leere Nachricht.');
 
@@ -40,7 +42,7 @@ export async function runChatTurn(db, { conversationId, text }, send, signal) {
   }
   send('meta', { conversation_id: convId, provider: providerName });
 
-  db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(convId, 'user', text);
+  const turnId = Number(db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(convId, 'user', text).lastInsertRowid);
 
   // Verlauf laden (die letzten N Nachrichten), Rollen sauber abwechseln lassen
   const rows = db.prepare('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?')
@@ -59,21 +61,22 @@ export async function runChatTurn(db, { conversationId, text }, send, signal) {
     settings,
     facts: db.prepare("SELECT id, text FROM facts WHERE status = 'active' ORDER BY id").all(),
     openTasks: db.prepare('SELECT id, title, due_at FROM tasks WHERE done = 0 ORDER BY COALESCE(due_at, created_at) LIMIT 30').all(),
-    connections: getConnections(settings),
+    connections: getConnections(settings, db),
+    google: googleStatus(db), telegram: telegramStatus(db), channel,
   });
 
   let fullText = '';
   let lastWasTool = false;
   await PROVIDERS[providerName].run({
-    system, messages, tools: TOOL_DEFS, signal,
+    system, messages, tools: getToolDefs(db), signal,
     onText: (t) => {
       if (lastWasTool && fullText && !/\s$/.test(fullText)) { fullText += ' '; send('delta', { text: ' ' }); }
       lastWasTool = false;
       fullText += t; send('delta', { text: t });
     },
-    runTool: (name, input) => {
+    runTool: async (name, input) => {
       lastWasTool = true;
-      const { result, event } = runTool(db, name, input, { userTexts });
+      const { result, event } = await runTool(db, name, input, { userTexts, turnId, lastUserText: text });
       if (event) send('tool', event);
       return result;
     },
@@ -83,4 +86,20 @@ export async function runChatTurn(db, { conversationId, text }, send, signal) {
   const msgId = Number(db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(convId, 'assistant', fullText).lastInsertRowid);
   db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(convId);
   send('done', { message_id: msgId, conversation_id: convId });
+}
+
+/** Gesprächszug ohne Streaming (für Telegram). Liefert den Antworttext. */
+export async function runChatTurnCollect(db, text, channel = 'telegram') {
+  let conv = db.prepare("SELECT id FROM conversations WHERE title = '💬 Telegram'").get();
+  if (!conv) conv = { id: Number(db.prepare("INSERT INTO conversations (title) VALUES ('💬 Telegram')").run().lastInsertRowid) };
+  let out = '';
+  const notes = [];
+  await runChatTurn(db, { conversationId: conv.id, text, channel }, (ev, data) => {
+    if (ev === 'delta') out += data.text;
+    else if (ev === 'error') out += (out ? '\n\n' : '') + '⚠️ ' + data.message;
+    else if (ev === 'tool' && data.type === 'message') notes.push(`👉 ${data.channel === 'whatsapp' ? 'WhatsApp' : 'SMS'} öffnen: ${data.url}`);
+    else if (ev === 'tool' && data.type === 'call' && data.phone) notes.push(`📞 Anrufen: tel:${data.phone}`);
+    else if (ev === 'tool' && data.type === 'fact' && data.status === 'pending') notes.push(`🧠 Zum Merken vorgeschlagen: „${data.text}“ (in der App bestätigen)`);
+  });
+  return [out.trim(), ...notes].filter(Boolean).join('\n\n');
 }

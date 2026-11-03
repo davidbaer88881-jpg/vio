@@ -7,6 +7,11 @@ import { openDb, getSettings, saveSettings, getProtected, saveProtected, DEFAULT
 import * as auth from './auth.js';
 import { runChatTurn, activeProvider, providerLabel } from './chat.js';
 import { restoreBackup, scheduleBackup, flushBackup, backupEnabled } from './backup.js';
+import { runChatTurnCollect } from './chat.js';
+import * as google from './google.js';
+import * as telegram from './telegram.js';
+import { synthesize, GEMINI_VOICES } from './tts.js';
+import { startScheduler, buildBriefing, tick } from './scheduler.js';
 import { getConnections } from './connections.js';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -85,7 +90,30 @@ export function createApp(db) {
       if (!pathname.startsWith('/api/')) return await serveStatic(req, res, pathname);
 
       // CSRF-Schutz: alle schreibenden API-Aufrufe brauchen den Header X-Vio (kann eine fremde Seite nicht setzen)
-      if (method !== 'GET' && req.headers['x-vio'] !== '1') return json(res, 403, { error: 'CSRF-Schutz' });
+      if (method !== 'GET' && req.headers['x-vio'] !== '1' && pathname !== '/api/telegram/webhook') return json(res, 403, { error: 'CSRF-Schutz' });
+
+      // --- Telegram-Webhook (ohne Login, abgesichert über geheimen Header + verknüpften Chat) ---
+      if (pathname === '/api/telegram/webhook' && method === 'POST') {
+        if (!telegram.telegramConfigured()) return json(res, 404, { error: 'Telegram nicht eingerichtet' });
+        const update = await readJson(req, 256 * 1024);
+        json(res, 200, { ok: true }); // sofort bestätigen, damit Telegram nicht erneut sendet
+        telegram.handleUpdate(db, update, req.headers['x-telegram-bot-api-secret-token'], (text) => runChatTurnCollect(db, text))
+          .then(() => scheduleBackup(db)).catch((e) => console.error('Telegram:', e.message));
+        return;
+      }
+
+      // --- Google-Rückleitung nach dem Login (ohne Session-Cookie, abgesichert über einmaligen state) ---
+      if (pathname === '/api/google/callback' && method === 'GET') {
+        const err = url.searchParams.get('error');
+        try {
+          if (err) throw new Error(err === 'access_denied' ? 'Zugriff wurde abgelehnt.' : err);
+          await google.finishAuth(db, { code: url.searchParams.get('code'), state: url.searchParams.get('state') });
+          scheduleBackup(db);
+          return send(res, 302, '', { Location: '/#/apps?google=ok' });
+        } catch (e) {
+          return send(res, 302, '', { Location: '/#/apps?google_error=' + encodeURIComponent(e.message) });
+        }
+      }
 
       if (pathname === '/api/health') return json(res, 200, { ok: true, setup: hasUser(), ai: availableProviders(), backup: backupEnabled() });
 
@@ -120,8 +148,8 @@ export function createApp(db) {
           conversations: db.prepare('SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 5').all(),
           tasks: db.prepare('SELECT id, title, due_at FROM tasks WHERE done = 0 ORDER BY due_at IS NULL, due_at, id LIMIT 5').all(),
           pending_facts: db.prepare("SELECT id, text FROM facts WHERE status = 'pending' ORDER BY id").all(),
-          events: null, // Kalender noch nicht verbunden (Phase 7)
-          connections: getConnections(getSettings(db)),
+          connections: getConnections(getSettings(db), db),
+          events: google.googleStatus(db).connected ? await google.listEvents(db, { max: 5 }).catch(() => null) : null,
         });
       }
 
@@ -186,6 +214,9 @@ export function createApp(db) {
           if (!(k in DEFAULT_SETTINGS)) continue; // geschützte Werte sind hier NICHT änderbar
           if (typeof v !== typeof DEFAULT_SETTINGS[k]) continue;
           if (k === 'memory_mode' && !['ask', 'auto', 'off'].includes(v)) continue;
+          if (k === 'voice_engine' && !['gemini', 'device'].includes(v)) continue;
+          if (k === 'morning_briefing' && v !== '' && !/^\d{2}:\d{2}$/.test(v)) continue;
+          if (k === 'last_briefing') continue;
           if (k === 'ai_provider' && !['auto', 'gemini', 'claude'].includes(v)) continue;
           if (k === 'tts_mode' && !['voice', 'always', 'never'].includes(v)) continue;
           if ((k === 'speech_rate' || k === 'speech_pitch') && !(v >= 0.5 && v <= 2)) continue;
@@ -239,7 +270,7 @@ export function createApp(db) {
         const { title, due_at } = await readJson(req);
         const t = String(title || '').trim().slice(0, 200);
         if (!t) return json(res, 400, { error: 'Titel fehlt' });
-        db.prepare('INSERT INTO tasks (title, due_at) VALUES (?, ?)').run(t, due_at ? String(due_at).slice(0, 16) : null);
+        db.prepare('INSERT INTO tasks (title, due_at) VALUES (?, ?)').run(t, due_at ? String(due_at).replace('T', ' ').slice(0, 16) : null);
         return json(res, 200, { ok: true });
       }
       m = pathname.match(/^\/api\/tasks\/(\d+)$/);
@@ -253,7 +284,56 @@ export function createApp(db) {
         return json(res, 200, { ok: true });
       }
 
-      if (pathname === '/api/connections' && method === 'GET') return json(res, 200, getConnections(getSettings(db)));
+      if (pathname === '/api/connections' && method === 'GET') {
+        return json(res, 200, {
+          connections: getConnections(getSettings(db), db),
+          google: { ...google.googleStatus(db), configured: google.googleConfigured(), redirect_uri: config.publicUrl ? google.redirectUri() : '' },
+          telegram: { ...telegram.telegramStatus(db), groups: db.prepare('SELECT title FROM telegram_chats ORDER BY title').all().map((g) => g.title) },
+        });
+      }
+
+      // --- Google ---
+      if (pathname === '/api/google/connect' && method === 'POST') {
+        if (!google.googleConfigured()) return json(res, 400, { error: 'Google ist auf dem Server noch nicht eingerichtet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).' });
+        return json(res, 200, { url: google.startAuthUrl() });
+      }
+      if (pathname === '/api/google/disconnect' && method === 'POST') { google.disconnectGoogle(db); return json(res, 200, { ok: true }); }
+      if (pathname === '/api/calendar' && method === 'GET') {
+        if (!google.googleStatus(db).connected) return json(res, 200, { connected: false, events: [] });
+        const events = await google.listEvents(db, { from: url.searchParams.get('from') || undefined, to: url.searchParams.get('to') || undefined, max: 100 });
+        return json(res, 200, { connected: true, events });
+      }
+
+      // --- Telegram ---
+      if (pathname === '/api/telegram/link' && method === 'POST') {
+        if (!telegram.telegramConfigured()) return json(res, 400, { error: 'Telegram ist auf dem Server noch nicht eingerichtet (TELEGRAM_BOT_TOKEN).' });
+        await telegram.setupWebhook().catch((e) => console.error(e.message));
+        return json(res, 200, await telegram.createLinkCode());
+      }
+      if (pathname === '/api/telegram/unlink' && method === 'POST') { telegram.unlinkTelegram(db); return json(res, 200, { ok: true }); }
+      if (pathname === '/api/telegram/test' && method === 'POST') {
+        await telegram.sendToMe(db, '👋 Test von Vio – Telegram funktioniert!');
+        return json(res, 200, { ok: true });
+      }
+      if (pathname === '/api/briefing' && method === 'POST') {
+        const text = await buildBriefing(db);
+        if (telegram.telegramStatus(db).linked) await telegram.sendToMe(db, text);
+        return json(res, 200, { text });
+      }
+
+      // --- Stimme ---
+      if (pathname === '/api/voices' && method === 'GET') return json(res, 200, { gemini: config.geminiKey ? GEMINI_VOICES : [] });
+      if (pathname === '/api/tts' && method === 'POST') {
+        const { text, voice } = await readJson(req);
+        if (!text || String(text).length > 1500) return json(res, 400, { error: 'Text fehlt oder ist zu lang.' });
+        try {
+          const wav = await synthesize(text, voice || getSettings(db).gemini_voice);
+          return send(res, 200, wav, { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' });
+        } catch (e) {
+          console.error('TTS:', e.message);
+          return json(res, e.status === 429 ? 429 : 502, { error: e.status === 429 ? 'Sprach-Limit erreicht' : 'Sprachausgabe nicht verfügbar' });
+        }
+      }
       if (pathname === '/api/actions' && method === 'GET') {
         return json(res, 200, db.prepare('SELECT * FROM action_log ORDER BY id DESC LIMIT 50').all());
       }
@@ -282,6 +362,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === normalize(process.argv
   else scheduleBackup(db, 1000);
   if (!availableProviders().length) console.warn('⚠️  Kein KI-Schlüssel (GEMINI_API_KEY oder ANTHROPIC_API_KEY) – Vio kann noch nicht antworten.');
   setInterval(() => db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run(), 3600e3).unref();
+  startScheduler(db, () => scheduleBackup(db));
+  telegram.setupWebhook().then((ok) => ok && console.log('Telegram-Webhook eingerichtet.')).catch((e) => console.error('Telegram-Webhook:', e.message));
   const server = createServer(createApp(db)).listen(config.port, () =>
     console.log(`Vio läuft auf Port ${config.port} · KI: ${availableProviders().map(providerLabel).join(', ') || 'keine'} · Sicherung: ${backupEnabled() ? 'an' : 'aus'}`));
   const shutdown = async () => { server.close(); await flushBackup().catch(() => {}); process.exit(0); };

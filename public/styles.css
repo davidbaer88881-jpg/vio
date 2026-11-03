@@ -180,3 +180,15 @@ select.input { appearance: none; }
 .ask input[data-date] { max-width: 150px; }
 mark { background: rgba(139,108,255,.35); color: inherit; border-radius: 4px; padding: 0 2px; }
 pre { white-space: pre-wrap; background: rgba(255,255,255,.06); padding: 8px 10px; border-radius: 10px; }
+
+/* v0.3: Aktions-Karten, Kalender, Apps */
+.action-card { align-self: stretch; background: var(--surface); border: 1px solid var(--accent); border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.action-card .ac-head { font-weight: 600; }
+.action-card .ac-body { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; font-size: 15px; white-space: normal; overflow-wrap: anywhere; }
+.action-card .meta, .card .meta { font-size: 13px; color: var(--muted); }
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.row-flat { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.card p { margin: 0 0 10px; }
+.ev-time { font-size: 13px; color: var(--accent-2); min-width: 86px; font-variant-numeric: tabular-nums; }
+.row.conflict { border-color: var(--danger); }
+.hidden-field { display: none; }

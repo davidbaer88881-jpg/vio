@@ -17,3 +17,12 @@ services:
         sync: false
       - key: VIO_USER_NAME
         value: David
+      # Ab Version 0.3 (optional – in Render unter "Environment" eintragen):
+      - key: PUBLIC_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false

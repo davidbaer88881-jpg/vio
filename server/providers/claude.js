@@ -90,7 +90,7 @@ export async function run({ system, messages, tools, signal, onText, runTool, ma
     if (final.stop_reason !== 'tool_use') return;
     const results = [];
     for (const block of final.content.filter((b) => b.type === 'tool_use')) {
-      results.push({ type: 'tool_result', tool_use_id: block.id, content: runTool(block.name, block.input || {}) });
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: await runTool(block.name, block.input || {}) });
     }
     msgs.push({ role: 'user', content: results });
   }

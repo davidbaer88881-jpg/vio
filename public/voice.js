@@ -83,6 +83,59 @@ export function cleanForSpeech(text) {
 
 let queue = 0;
 let onIdle = null;
+let currentAudio = null;
+let ttsAbort = null;
+
+function begin() { queue++; window.dispatchEvent(new CustomEvent('vio-speaking', { detail: true })); }
+function finish() {
+  queue = Math.max(0, queue - 1);
+  if (queue === 0) {
+    window.dispatchEvent(new CustomEvent('vio-speaking', { detail: false }));
+    const cb = onIdle; onIdle = null; cb?.();
+  }
+}
+
+/** Natürliche Stimme (Gemini über den Server). Fällt bei Problemen auf die Handy-Stimme zurück. */
+let generation = 0;
+export async function speakNatural(text, settings = {}) {
+  const clean = cleanForSpeech(text);
+  if (!clean) return;
+  const myGen = generation;
+  begin();
+  let ok = false;
+  try {
+    ttsAbort = new AbortController();
+    const res = await fetch('/api/tts', {
+      method: 'POST', signal: ttsAbort.signal, credentials: 'same-origin',
+      headers: { 'X-Vio': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: clean.slice(0, 1500), voice: settings.gemini_voice }),
+    });
+    if (res.ok && myGen === generation) {
+      const url = URL.createObjectURL(await res.blob());
+      const audio = new Audio(url);
+      audio.playbackRate = settings.speech_rate || 1;
+      currentAudio = audio;
+      ok = await new Promise((resolve) => {
+        audio.onended = () => resolve(true);
+        audio.onerror = () => resolve(false);
+        audio.onpause = () => { if (!audio.ended) resolve(true); }; // vom Nutzer gestoppt
+        audio.play().catch(() => resolve(false));
+      });
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+    }
+  } catch { /* Netzwerk/Abbruch */ }
+  if (myGen !== generation) return; // inzwischen gestoppt
+  finish();
+  if (!ok) speak(text, settings); // Handy-Stimme als Ersatz
+}
+
+/** Spricht mit der eingestellten Stimme. */
+export function say(text, settings = {}) {
+  if (settings.voice_engine === 'gemini') return speakNatural(text, settings);
+  return speak(text, settings);
+}
+
 export function speak(text, settings = {}) {
   if (!canSpeak) return;
   const clean = cleanForSpeech(text);
@@ -92,23 +145,17 @@ export function speak(text, settings = {}) {
   if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'de-DE';
   u.rate = settings.speech_rate || 1;
   u.pitch = settings.speech_pitch ?? 0.85; // etwas tiefer = männlicher Klang
-  queue++;
-  window.dispatchEvent(new CustomEvent('vio-speaking', { detail: true }));
-  const finish = () => {
-    queue = Math.max(0, queue - 1);
-    if (queue === 0) {
-      window.dispatchEvent(new CustomEvent('vio-speaking', { detail: false }));
-      const cb = onIdle; onIdle = null; cb?.();
-    }
-  };
+  begin();
   u.onend = finish; u.onerror = finish;
   speechSynthesis.speak(u);
 }
 export function whenSpeechDone(cb) { if (queue === 0) cb(); else onIdle = cb; }
 export function stopSpeaking() {
-  if (!canSpeak) return;
+  generation++;
   onIdle = null; queue = 0;
-  speechSynthesis.cancel();
+  try { ttsAbort?.abort(); } catch {}
+  if (currentAudio) { try { currentAudio.pause(); } catch {} currentAudio = null; }
+  if (canSpeak) speechSynthesis.cancel();
   window.dispatchEvent(new CustomEvent('vio-speaking', { detail: false }));
 }
 export const isSpeaking = () => queue > 0;
@@ -118,6 +165,7 @@ export class SentenceSpeaker {
   constructor(settings) { this.settings = settings; this.buf = ''; }
   push(delta) {
     this.buf += delta;
+    if (this.settings.voice_engine === 'gemini') return; // natürliche Stimme: ganze Antwort auf einmal (spart Anfragen)
     let i;
     // Satzende = . ! ? … gefolgt von Leerzeichen/Zeilenumbruch (nicht "z.B." mitten im Wort)
     while ((i = this.buf.search(/[.!?…]\s/)) !== -1) {
@@ -126,5 +174,5 @@ export class SentenceSpeaker {
       if (sentence.trim().length > 1) speak(sentence, this.settings);
     }
   }
-  flush() { if (this.buf.trim()) speak(this.buf, this.settings); this.buf = ''; }
+  flush() { if (this.buf.trim()) say(this.buf, this.settings); this.buf = ''; }
 }

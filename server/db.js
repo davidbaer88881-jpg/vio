@@ -12,6 +12,11 @@ export const DEFAULT_SETTINGS = {
   speech_rate: 1.0,
   speech_pitch: 0.85,
   handsfree: false,
+  voice_engine: 'gemini',    // 'gemini' = natürliche Stimme vom Server, 'device' = Handy-Stimme
+  gemini_voice: 'Puck',
+  morning_briefing: '07:30', // Uhrzeit der Tagesübersicht per Telegram, '' = aus
+  telegram_reminders: true,
+  last_briefing: '',
 };
 
 // Geschützte Einstellungen: nur mit Passwort änderbar, niemals per Chat.
@@ -56,11 +61,22 @@ export function openDb(path = config.dbPath) {
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT, due_at TEXT,
       done INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), done_at TEXT);
 
+    CREATE TABLE IF NOT EXISTS integrations (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+    CREATE TABLE IF NOT EXISTS telegram_chats (
+      chat_id TEXT PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+
     CREATE TABLE IF NOT EXISTS action_log (
       id INTEGER PRIMARY KEY, action_type TEXT NOT NULL, payload TEXT NOT NULL,
       decision TEXT NOT NULL, reason TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')));
   `);
+  // Spätere Erweiterungen (bestehende Datenbanken werden automatisch nachgerüstet)
+  for (const sql of [
+    "ALTER TABLE tasks ADD COLUMN repeat TEXT",         // daily | weekdays | weekly | monthly
+    "ALTER TABLE tasks ADD COLUMN reminded_at TEXT",
+  ]) { try { db.exec(sql); } catch {} }
   return db;
 }
 

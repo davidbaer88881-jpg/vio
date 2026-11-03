@@ -133,7 +133,7 @@ test('Budget-Regeln gelten auch mit Gemini (15 € genannt, 13,90 € → freige
   const ev = await chat('Bestell mir eine Pizza, maximal 15 Euro');
   const pol = ev.find((e) => e.event === 'tool' && e.data.type === 'policy');
   assert.equal(pol.data.decision, 'allow');
-  assert.match(ev.filter((e) => e.event === 'delta').map((e) => e.data.text).join(''), /noch nicht eingerichtet/);
+  assert.match(ev.filter((e) => e.event === 'delta').map((e) => e.data.text).join(''), /noch nicht selbst anrufen/);
 });
 
 test('Gemini überlastet (503): 3 Versuche, dann automatisch Ausweich-Modell', async () => {

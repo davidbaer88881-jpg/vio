@@ -1,21 +1,25 @@
 import { config } from './config.js';
+import { googleConfigured, googleStatus } from './google.js';
+import { telegramStatus } from './telegram.js';
 
 // Ehrlicher Verbindungsstatus. Nichts wird als "verbunden" angezeigt, was nicht wirklich läuft.
-// Neue Integrationen werden hier registriert (erweiterbares Integrationssystem).
-export function getConnections(settings = {}) {
-  const hasBrain = !!(config.geminiKey || config.apiKey);
-  const brain = settings.ai_provider === 'claude' && config.apiKey ? 'Claude'
-    : config.geminiKey ? 'Gemini' : config.apiKey ? 'Claude' : '';
+// status: connected | missing_key | available (eingerichtet, aber noch nicht verknüpft) | needs_setup | limited | planned
+export function getConnections(settings = {}, db = null) {
+  const brain = settings.ai_provider === 'claude' && config.apiKey ? 'Claude' : config.geminiKey ? 'Gemini' : config.apiKey ? 'Claude' : '';
+  const g = db ? googleStatus(db) : { connected: false };
+  const t = db ? telegramStatus(db) : { configured: false, linked: false };
+  const gState = g.connected ? 'connected' : googleConfigured() ? 'available' : 'needs_setup';
   return [
-    { id: 'ai', name: brain ? `KI-Gehirn (${brain})` : 'KI-Gehirn', status: hasBrain ? 'connected' : 'missing_key', phase: 4 },
-    { id: 'tasks', name: 'Aufgaben (intern)', status: 'connected', phase: 1 },
-    { id: 'memory', name: 'Gedächtnis (intern)', status: 'connected', phase: 1 },
-    { id: 'backup', name: 'Datensicherung (Supabase)', status: config.supabaseUrl && config.supabaseKey ? 'connected' : 'optional', phase: 1 },
-    { id: 'google_calendar', name: 'Google Kalender', status: 'planned', phase: 7 },
-    { id: 'telegram', name: 'Telegram', status: 'planned', phase: 8 },
-    { id: 'gmail', name: 'Gmail', status: 'planned', phase: 8 },
-    { id: 'whatsapp', name: 'WhatsApp', status: 'planned', phase: 8 },
-    { id: 'phone', name: 'Telefonie', status: 'planned', phase: 9 },
-    { id: 'web_search', name: 'Websuche & Preise', status: 'planned', phase: 8 },
+    { id: 'ai', name: brain ? `KI-Gehirn (${brain})` : 'KI-Gehirn', status: brain ? 'connected' : 'missing_key' },
+    { id: 'tasks', name: 'Aufgaben & Erinnerungen', status: 'connected' },
+    { id: 'memory', name: 'Gedächtnis', status: 'connected' },
+    { id: 'backup', name: 'Datensicherung (Supabase)', status: config.supabaseUrl && config.supabaseKey ? 'connected' : 'needs_setup' },
+    { id: 'google_calendar', name: 'Google Kalender', status: gState, detail: g.email || '' },
+    { id: 'gmail', name: 'Gmail', status: gState, detail: g.email || '' },
+    { id: 'telegram', name: 'Telegram', status: t.linked ? 'connected' : t.configured ? 'available' : 'needs_setup', detail: t.name || '' },
+    { id: 'whatsapp', name: 'WhatsApp', status: 'limited', detail: 'Vio schreibt, du tippst auf Senden' },
+    { id: 'sms', name: 'SMS', status: 'limited', detail: 'Vio schreibt, du tippst auf Senden' },
+    { id: 'phone', name: 'Telefon', status: 'limited', detail: 'Vio bereitet vor, du rufst an' },
+    { id: 'web_search', name: 'Websuche & Preise', status: 'planned' },
   ];
 }

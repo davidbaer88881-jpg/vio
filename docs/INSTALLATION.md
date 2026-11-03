@@ -89,3 +89,65 @@ Auf console.anthropic.com Guthaben aufladen und einen Schlüssel erstellen. In R
 - Dein Passwort wird verschlüsselt (scrypt) gespeichert. Das Sitzungs-Cookie ist HttpOnly, Secure und SameSite=Strict. Nach 5 Fehlversuchen ist der Login 15 Minuten gesperrt.
 - Die Sicherung liegt in einem privaten Bucket und ist nur mit dem Secret Key erreichbar.
 - Die Budget-Obergrenze lässt sich nur mit deinem Passwort ändern. Zahlungen, Überweisungen, Online-Käufe, Abos und Verträge sind im Code gesperrt, egal welches KI-Gehirn aktiv ist.
+
+---
+
+# Ab Version 0.3: Apps verbinden
+
+Alles hier ist **optional** und **kostenlos**. Neue Werte trägst du in Render ein: Dienst **vio** → **Environment** → **Add Environment Variable** → **Save Changes**. Render startet Vio danach automatisch neu.
+
+Trag zuerst einmal ein:
+
+| Name | Wert |
+|---|---|
+| `PUBLIC_URL` | deine Vio-Adresse, z. B. `https://vio-i6j2.onrender.com` (ohne `/` am Ende) |
+
+## A) Telegram verbinden (5 Min.) – für Erinnerungen aufs Handy
+
+1. Öffne **Telegram** und suche nach **@BotFather** (blauer Haken).
+2. Tippe auf **Starten** und schicke `/newbot`.
+3. Name: `Vio`. Benutzername: z. B. `VioDavid_bot`. Er muss auf `bot` enden und darf noch nicht vergeben sein.
+4. BotFather schickt dir einen **Token** (`123456789:AA…`). Das ist ein Passwort, schick ihn niemandem.
+5. Trag ihn in Render als `TELEGRAM_BOT_TOKEN` ein und speichere.
+6. Warte, bis Render wieder „Deployed“ zeigt. Dann in Vio: **Apps → Telegram verbinden**. Telegram öffnet sich, dort auf **Starten** tippen.
+7. Zurück in Vio auf **Test-Nachricht** tippen. Sie sollte in Telegram ankommen.
+
+**Gruppen:** Lade deinen Bot in eine Telegram-Gruppe ein, dann kann Vio dort auf deinen Wunsch Nachrichten posten. Vor dem Senden fragt er dich immer.
+
+## B) Google Kalender & Gmail verbinden (15 Min., am besten am PC)
+
+1. Öffne **console.cloud.google.com** und melde dich mit deinem Google-Konto an.
+2. Klicke oben auf die Projektauswahl → **Neues Projekt** → Name `Vio` → **Erstellen**. Wähl das Projekt danach oben aus.
+3. **APIs aktivieren:** Suche oben nach **„Google Calendar API“** → **Aktivieren**. Dasselbe für **„Gmail API“**.
+4. **Zustimmungsbildschirm:** Suche nach **„Google Auth Platform“** (oder „OAuth-Zustimmungsbildschirm“) → **Jetzt starten**:
+   - App-Name `Vio`, deine E-Mail als Support-Adresse
+   - Zielgruppe: **Extern**
+   - Kontakt-E-Mail: deine Adresse → **Erstellen**
+5. **Zielgruppe (Audience):** Füge unter **Testnutzer** deine Gmail-Adresse hinzu.
+6. **Clients:** **Client erstellen** → Typ **Webanwendung** → Name `Vio`.
+   Unter **Autorisierte Weiterleitungs-URIs** trägst du ein: `https://vio-i6j2.onrender.com/api/google/callback` (mit deiner Adresse) → **Erstellen**.
+7. Kopiere **Client-ID** und **Clientschlüssel** und trag sie in Render als `GOOGLE_CLIENT_ID` und `GOOGLE_CLIENT_SECRET` ein.
+8. Warte, bis Render wieder „Deployed“ zeigt. Dann in Vio: **Apps → Mit Google verbinden**.
+   Google warnt **„Google hat diese App nicht überprüft“**. Das ist normal, die App gehört ja dir. Tippe auf **Erweitert → Weiter zu Vio**, setze alle Haken und tippe auf **Weiter**.
+
+**Wichtig:** Solange die App bei Google im **Testmodus** ist, läuft die Verbindung **nach 7 Tagen ab**. Dann musst du in Vio auf „Mit Google verbinden“ tippen. Damit sie dauerhaft hält: In der Google Auth Platform unter **Zielgruppe** auf **App veröffentlichen** tippen (Status „In Produktion“). Für deine eigene Nutzung ist keine Google-Prüfung nötig, die Warnung beim Verbinden bleibt aber. Lässt Google das Veröffentlichen nicht zu, bleib im Testmodus und verbinde einfach alle 7 Tage neu.
+
+## C) Vio wach halten (für pünktliche Erinnerungen)
+
+Der Gratis-Server schläft nach 15 Minuten ohne Besuch, und schlafend kann er keine Erinnerungen schicken. Abhilfe schafft ein kostenloser Weck-Dienst:
+
+1. Öffne **cron-job.org** und erstelle ein kostenloses Konto.
+2. Klicke **Create cronjob**. Titel: `Vio`, URL: `https://vio-i6j2.onrender.com/api/health`, Ausführung: **alle 10 Minuten** → **Create**.
+
+Render Free hat 750 Stunden pro Monat. Das reicht genau für einen Dienst, der rund um die Uhr läuft.
+
+## Was Vio jetzt kann
+
+- **Natürliche Männerstimme:** Mehr → Einstellungen → Stimme → „Natürlich (Gemini)“ → Stimme wählen → **Stimme testen**. Ist das Gratis-Limit erreicht, springt automatisch die Handy-Stimme ein.
+- **Kalender:** „Was steht morgen an?“, „Trag mir Freitag 15 Uhr Zahnarzt ein“. Vio warnt bei Überschneidungen.
+- **Erinnerungen:** „Erinner mich um 18 Uhr ans Altglas“ oder „jeden Montag um 7 an den Müll“. Die Erinnerung kommt per Telegram.
+- **Tagesübersicht:** jeden Morgen per Telegram, Uhrzeit unter Einstellungen → Erinnerungen.
+- **Gmail:** „Hab ich neue Mails?“, „Fass mir die Mail von Amazon zusammen“, „Antworte Tom, dass Samstag passt“. Vio zeigt dir immer erst den Entwurf. Senden kann er technisch erst, nachdem du in einer neuen Nachricht zugestimmt hast.
+- **Mit Vio in Telegram schreiben:** einfach dem Bot schreiben. Er antwortet nur dir, Fremde werden abgewiesen.
+- **WhatsApp/SMS:** „Schreib Lisa, dass ich später komme“. Vio formuliert die Nachricht, und ein Knopf öffnet WhatsApp mit dem fertigen Text. Abschicken tust du selbst, weil es keine offizielle Schnittstelle für private Nummern gibt.
+- **Telefon:** „Ich will bei der Werkstatt einen Termin ausmachen“. Vio schreibt einen Gesprächsleitfaden, und der Knopf öffnet dein Telefon. Dass Vio selbst anruft, geht nur über einen kostenpflichtigen Telefondienst.

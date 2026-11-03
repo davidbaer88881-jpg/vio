@@ -115,11 +115,10 @@ export async function run({ system, messages, tools, signal, onText, runTool, ma
     contents.push({ role: 'model', parts: final.parts });
     const calls = final.parts.filter((p) => p.functionCall);
     if (!calls.length) return;
-    contents.push({
-      role: 'user',
-      parts: calls.map(({ functionCall: fc }) => ({
-        functionResponse: { ...(fc.id ? { id: fc.id } : {}), name: fc.name, response: { result: runTool(fc.name, fc.args || {}) } },
-      })),
-    });
+    const responses = [];
+    for (const { functionCall: fc } of calls) {
+      responses.push({ functionResponse: { ...(fc.id ? { id: fc.id } : {}), name: fc.name, response: { result: await runTool(fc.name, fc.args || {}) } } });
+    }
+    contents.push({ role: 'user', parts: responses });
   }
 }

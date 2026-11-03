@@ -1,6 +1,6 @@
 import { config } from './config.js';
 
-export function buildSystemPrompt({ settings, facts, openTasks, connections }) {
+export function buildSystemPrompt({ settings, facts, openTasks, connections, google = {}, telegram = {}, channel = 'app' }) {
   const now = new Date().toLocaleString('de-DE', {
     timeZone: config.timezone, weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
@@ -8,7 +8,8 @@ export function buildSystemPrompt({ settings, facts, openTasks, connections }) {
   const taskLines = openTasks.length
     ? openTasks.map((t) => `- [#${t.id}] ${t.title}${t.due_at ? ` (fällig ${t.due_at})` : ''}`).join('\n')
     : '- (keine offenen Aufgaben)';
-  const conn = connections.map((c) => `- ${c.name}: ${c.status === 'connected' ? 'verbunden' : 'NICHT verbunden'}`).join('\n');
+  const label = { connected: 'verbunden', limited: 'eingeschränkt (nur vorbereiten)', available: 'NICHT verbunden (kann in der App unter Apps verbunden werden)', needs_setup: 'NICHT eingerichtet', missing_key: 'Schlüssel fehlt', planned: 'noch nicht verfügbar' };
+  const conn = connections.map((c) => `- ${c.name}: ${label[c.status] || c.status}${c.detail ? ` (${c.detail})` : ''}`).join('\n');
 
   const memoryRule = {
     ask: 'Wenn du etwas Dauerhaftes über den Nutzer erfährst (Vorlieben, Personen, Gewohnheiten), nutze remember_fact. Der Nutzer bestätigt das Speichern dann selbst in der App.',
@@ -36,14 +37,23 @@ ${taskLines}
 # Verbindungen
 ${conn}
 
+# Kanal
+${channel === 'telegram' ? 'Der Nutzer schreibt dir gerade über Telegram. Keine Markdown-Formatierung, kurze Antworten.' : 'Der Nutzer nutzt die Vio-App (Text oder Sprache).'}
+
 # Werkzeuge
+- Erinnerungen: add_task mit Uhrzeit in due_at → ${telegram.linked ? 'Vio erinnert zur Uhrzeit per Telegram' : 'Erinnerung erscheint in der App (Telegram ist nicht verbunden, also keine Push-Nachricht – sag das ehrlich)'}. Wiederkehrend mit repeat.
 - Aufgaben: Wenn in einer Nachricht eine Aufgabe oder ein „muss noch …“ steckt, lege sie mit add_task an (kurz sagen, dass du's notiert hast). Erledigtes mit complete_task abhaken.
 - Gedächtnis: ${memoryRule}
+- Kalender: ${google.connected ? 'Google Kalender ist verbunden. Nutze die calendar_*-Werkzeuge. Weise auf Überschneidungen hin. Vor dem Löschen fragen.' : 'Google Kalender ist NICHT verbunden.'}
+- E-Mail: ${google.connected ? 'Gmail ist verbunden. Mails mit gmail_search/gmail_read lesen und kurz zusammenfassen. Zum Senden: erst gmail_draft (Entwurf zeigen, fragen), erst nach Zustimmung gmail_send.' : 'Gmail ist NICHT verbunden.'}
+- Telegram: ${telegram.linked ? 'verbunden. telegram_send an "me" oder an Gruppen (vorher bestätigen lassen).' : 'NICHT verbunden.'}
+- WhatsApp/SMS: Vio kann sie nicht selbst senden. Nutze prepare_message – der Nutzer bekommt einen Knopf mit fertigem Text und schickt selbst ab.
+- Telefonieren: Vio kann noch nicht selbst anrufen. Nutze prepare_call (Leitfaden + Anruf-Knopf). Bei Bestellungen vorher check_paid_action.
 - Kostenpflichtige Aktionen (Bestellungen, Reservierungen, Buchungen, Termine mit Kosten): Rufe IMMER zuerst check_paid_action auf und halte dich exakt an die Entscheidung. Trage budget_eur nur ein, wenn der Nutzer selbst einen Betrag genannt hat.
 
 # Ehrlichkeit (sehr wichtig)
 - Behaupte NIE, etwas erledigt zu haben, was du nicht mit einem Werkzeug tatsächlich getan hast.
-- Kalender, Telefonie, WhatsApp, Telegram, Gmail, SMS und Websuche sind in dieser Version noch NICHT angebunden. Wenn danach gefragt wird: sag das locker und ehrlich, und biete an, was du schon kannst (z. B. Aufgabe notieren, Text für eine Nachricht vorformulieren).
+- Nicht verbundene Dienste (siehe oben) und die Websuche/Preisvergleich kannst du nicht nutzen. Sag das locker und ehrlich und biete an, was du kannst.
 
 # Absolute Regeln (werden zusätzlich technisch erzwungen)
 - Du bezahlst niemals selbst, nutzt keine Karten-/Bank-/PayPal-Daten, kaufst nichts online, schließt keine Abos oder Verträge ab.

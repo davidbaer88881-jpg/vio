@@ -30,7 +30,9 @@ export function listen({ onInterim, onFinal, onEnd, onError }) {
       'not-allowed': 'Mikrofon-Zugriff verweigert. Erlaube das Mikrofon in den Chrome-Website-Einstellungen.',
       'no-speech': null, 'aborted': null,
       'network': 'Spracherkennung braucht eine Internetverbindung.',
-      'audio-capture': 'Kein Mikrofon gefunden.',
+      'audio-capture': 'Kein Mikrofon gefunden – oder eine andere App benutzt es gerade.',
+      'service-not-allowed': 'Die Google-Spracherkennung ist blockiert. Prüfe im Play Store, ob „Speech Services by Google“ installiert und aktuell ist.',
+      'language-not-supported': 'Deutsch ist für die Spracherkennung nicht verfügbar. Installiere Deutsch in „Speech Services by Google“.',
     };
     const msg = e.error in map ? map[e.error] : `Spracherkennung: ${e.error}`;
     if (msg) onError?.(msg);

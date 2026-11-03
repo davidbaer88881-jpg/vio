@@ -75,8 +75,9 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 18px 0 8px; }
 .hero .greet { font-size: 15px; color: var(--muted); }
 .hero h1 { font-size: 30px; }
-.orb-wrap { position: relative; margin: 26px 0 22px; }
+.orb-wrap { position: relative; margin: 26px 0 22px; isolation: isolate; }
 .orb {
+  position: relative; z-index: 1;
   width: 132px; height: 132px; border-radius: 50%; border: 0; cursor: pointer; color: #fff;
   background: var(--grad); display: grid; place-items: center;
   box-shadow: 0 10px 40px rgba(139, 108, 255, .45), inset 0 -8px 24px rgba(0,0,0,.18);
@@ -84,7 +85,7 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
 }
 .orb:active { transform: scale(.96); }
 .orb svg { width: 46px; height: 46px; stroke-width: 2.2; }
-.orb-wrap::before { content: ""; position: absolute; inset: -14px; border-radius: 50%; background: var(--grad); opacity: .16; filter: blur(14px); animation: breathe 4s ease-in-out infinite; }
+.orb-wrap::before { content: ""; pointer-events: none; z-index: 0; position: absolute; inset: -14px; border-radius: 50%; background: var(--grad); opacity: .16; filter: blur(14px); animation: breathe 4s ease-in-out infinite; }
 @keyframes breathe { 50% { transform: scale(1.08); opacity: .26; } }
 .ask { display: flex; gap: 8px; width: 100%; }
 .ask .input { border-radius: 999px; padding-left: 18px; }

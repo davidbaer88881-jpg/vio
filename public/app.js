@@ -76,7 +76,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -379,7 +379,7 @@ async function sendMessage(text, viaVoice) {
     });
   } catch (e) {
     if (e instanceof AuthError) return renderLogin();
-    if (e.name !== 'AbortError') reply.content += (reply.content ? '\n\n' : '') + '⚠️ Verbindung unterbrochen: ' + e.message;
+    if (e.name !== 'AbortError') reply.content += (reply.content ? '\n\n' : '') + '⚠️ Die Verbindung ist abgerissen – vermutlich startet der Server gerade neu oder wacht auf. Schick die Nachricht in ein paar Sekunden einfach nochmal.';
     else reply.content += reply.content ? ' …' : '(abgebrochen)';
   } finally {
     reply.typing = false;
@@ -621,11 +621,12 @@ function actionCard(d) {
       <div class="ac-body">${esc(d.script).replace(/\n/g, '<br>')}</div>
       <div class="btn-row">${d.phone ? `<a class="btn primary small" href="tel:${esc(d.phone)}">Jetzt anrufen</a>` : '<button class="btn primary small" data-pick="tel">Kontakt wählen & anrufen</button>'}</div>`;
   }
-  const app = d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS';
-  return `<div class="ac-head">${d.channel === 'whatsapp' ? '💬' : '✉️'} ${app}${d.contact_name ? ` an ${esc(d.contact_name)}` : ''}</div>
+  const app = { whatsapp: 'WhatsApp', telegram: 'Telegram', sms: 'SMS' }[d.channel] || 'SMS';
+  return `<div class="ac-head">${{ whatsapp: '💬', telegram: '✈️', sms: '✉️' }[d.channel] || '✉️'} ${app}${d.contact_name ? ` an ${esc(d.contact_name)}` : ''}</div>
+    ${d.channel === 'telegram' ? `<div class="meta">Telegram öffnet sich – wähl dort ${d.contact_name ? esc(d.contact_name) : 'den Kontakt'} aus und tipp auf Senden.</div>` : ''}
     <div class="ac-body">${esc(d.text).replace(/\n/g, '<br>')}</div>
     <div class="btn-row" data-text="${esc(d.text)}" data-channel="${d.channel}">
-      ${d.phone ? `<a class="btn primary small" href="${esc(d.url)}" target="_blank" rel="noopener">In ${app} öffnen</a>` : `<button class="btn primary small" data-pick="${d.channel}">Kontakt wählen & öffnen</button>${d.channel === 'whatsapp' ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">In WhatsApp wählen</a>` : ''}`}
+      ${d.phone || d.channel === 'telegram' ? `<a class="btn primary small" href="${esc(d.url)}" target="_blank" rel="noopener">In ${app} öffnen</a>` : `<button class="btn primary small" data-pick="${d.channel}">Kontakt wählen & öffnen</button>${d.channel === 'whatsapp' ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">In WhatsApp wählen</a>` : ''}`}
       <button class="btn small" data-copy>Text kopieren</button>
     </div>`;
 }

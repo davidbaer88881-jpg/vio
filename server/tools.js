@@ -46,11 +46,11 @@ const BASE_TOOLS = [
   },
   {
     name: 'prepare_message',
-    description: 'Bereitet eine WhatsApp- oder SMS-Nachricht vor. Der Nutzer bekommt einen Knopf, der die App mit dem fertigen Text öffnet – er drückt selbst auf Senden. (Vio kann WhatsApp/SMS nicht selbst verschicken.)',
+    description: 'Bereitet eine Nachricht an eine andere Person per WhatsApp, SMS oder Telegram vor. Der Nutzer bekommt einen Knopf, der die App mit dem fertigen Text öffnet, wählt den Kontakt und drückt selbst auf Senden. (Vio kann anderen Personen nicht selbst schreiben – auch nicht per Telegram.)',
     input_schema: {
       type: 'object',
       properties: {
-        channel: { type: 'string', enum: ['whatsapp', 'sms'] },
+        channel: { type: 'string', enum: ['whatsapp', 'sms', 'telegram'] },
         text: S('Der Nachrichtentext'),
         contact_name: S('Name des Empfängers (falls bekannt)'),
         phone: S('Telefonnummer im internationalen Format, z. B. +4917612345678 (nur wenn bekannt; sonst wählt der Nutzer den Kontakt)'),
@@ -142,7 +142,7 @@ const GMAIL_TOOLS = [
 const TELEGRAM_TOOLS = [
   {
     name: 'telegram_send',
-    description: 'Schickt eine Telegram-Nachricht – an den Nutzer selbst ("me") oder in eine Gruppe, in der Vios Bot Mitglied ist (Gruppenname). Bei Gruppen vorher Text zeigen und bestätigen lassen (user_confirmed=true).',
+    description: 'Schickt über Vios Bot eine Telegram-Nachricht – NUR an den Nutzer selbst ("me") oder in eine Gruppe, in der der Bot Mitglied ist. Für Nachrichten an andere Personen stattdessen prepare_message mit channel "telegram" verwenden. Gruppenname. Bei Gruppen vorher Text zeigen und bestätigen lassen (user_confirmed=true).',
     input_schema: { type: 'object', properties: { chat: S('"me" oder Name der Gruppe'), text: S('Nachricht'), user_confirmed: { type: 'boolean' } }, required: ['chat', 'text'] },
   },
 ];
@@ -220,13 +220,13 @@ async function runToolInner(db, name, input, ctx) {
     case 'prepare_message': {
       const text = String(input.text || '').slice(0, 2000);
       const phone = digits(input.phone);
-      const channel = input.channel === 'sms' ? 'sms' : 'whatsapp';
-      const url = channel === 'whatsapp'
-        ? `https://wa.me/${phone.replace('+', '')}?text=${encodeURIComponent(text)}`
+      const channel = ['sms', 'telegram'].includes(input.channel) ? input.channel : 'whatsapp';
+      const url = channel === 'whatsapp' ? `https://wa.me/${phone.replace('+', '')}?text=${encodeURIComponent(text)}`
+        : channel === 'telegram' ? `tg://msg?text=${encodeURIComponent(text)}`
         : `sms:${phone}?body=${encodeURIComponent(text)}`;
       return {
         result: 'Nachricht vorbereitet. Der Nutzer sieht einen Knopf zum Öffnen und schickt sie selbst ab.',
-        event: { type: 'message', channel, text, phone, contact_name: input.contact_name || '', url, needs_contact: !phone },
+        event: { type: 'message', channel, text, phone, contact_name: input.contact_name || '', url, needs_contact: channel !== 'telegram' && !phone },
       };
     }
     case 'prepare_call': {

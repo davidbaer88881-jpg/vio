@@ -59,6 +59,7 @@ before(async () => {
       if (/sofort senden/i.test(t)) return sse(res, [call('gmail_draft', { to: 'tom@example.com', subject: 'Hi', body: 'Hallo Tom' }), call('gmail_send', { draft_id: 1 })]);
       if (/mail an tom/i.test(t)) return sse(res, [call('gmail_draft', { to: 'tom@example.com', subject: 'Grillen', body: 'Hey Tom, Samstag grillen?' })]);
       if (/ja, schick/i.test(t)) return sse(res, [call('gmail_send', { draft_id: 2 })]);
+      if (/josua/i.test(t)) return sse(res, [call('prepare_message', { channel: 'telegram', text: 'Hi', contact_name: 'Josua' })]);
       if (/whatsapp/i.test(t)) return sse(res, [call('prepare_message', { channel: 'whatsapp', text: 'Bin gleich da!', phone: '+49 176 1234567', contact_name: 'Lisa' })]);
       return sse(res, [{ text: `Echo: ${t}` }]);
     }
@@ -163,6 +164,15 @@ test('WhatsApp: Vio bereitet nur vor (Link mit Text), sendet nicht selbst', asyn
   const ev = await chat('Schreib Lisa auf WhatsApp, dass ich gleich da bin');
   const m = ev.find((e) => e.event === 'tool' && e.data.type === 'message');
   assert.equal(m.data.url, 'https://wa.me/491761234567?text=Bin%20gleich%20da!');
+});
+
+test('Telegram an andere Person: nur vorbereiten (Telegram-Link), nie selbst senden', async () => {
+  const before = log.telegram.filter((t) => t.method === 'sendMessage').length;
+  const ev = await chat('Schreibe Josua auf Telegram hi');
+  const m = ev.find((e) => e.event === 'tool' && e.data.type === 'message');
+  assert.equal(m.data.channel, 'telegram');
+  assert.equal(m.data.url, 'tg://msg?text=Hi');
+  assert.equal(log.telegram.filter((t) => t.method === 'sendMessage').length, before);
 });
 
 test('Telegram: falsches Webhook-Geheimnis wird ignoriert, fremde Chats werden abgewiesen', async () => {

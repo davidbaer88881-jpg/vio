@@ -1,6 +1,6 @@
 // Service Worker: macht Vio installierbar und lädt die Oberfläche blitzschnell.
 // API-Antworten werden NIE zwischengespeichert (private Daten).
-const CACHE = 'vio-shell-v2';
+const CACHE = 'vio-shell-v3';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/api.js', '/voice.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -19,7 +19,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
   // Network-first, damit Updates sofort ankommen; offline aus dem Cache
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
         if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
         return res;

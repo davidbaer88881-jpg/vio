@@ -76,6 +76,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
+export const VERSION = '0.2.3';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -186,7 +187,8 @@ async function renderHome() {
     <div class="status-chips">${data.connections.map(connChip).join('')}</div>
   `;
 
-  $('#orb').onclick = () => { location.hash = '#/chat'; setTimeout(startListening, 120); };
+  // Mikrofon SOFORT im Tipp starten (Android erlaubt das nur direkt bei der Berührung), dann zum Chat wechseln
+  $('#orb').onclick = () => { newConversation(); startListening(); location.hash = '#/chat'; };
   $('#ask').onsubmit = (e) => {
     e.preventDefault();
     const q = e.target.q.value.trim(); if (!q) return;
@@ -501,7 +503,8 @@ function renderMore() {
   ];
   view().innerHTML = `<h1>Mehr</h1><p class="sub">Alles Weitere an einem Ort.</p>
     <div class="tiles">${tiles.map(([r, i, t, m]) => `<a class="tile" href="#/${r}">${i}<div><div>${t}</div><div class="meta">${m}</div></div></a>`).join('')}</div>
-    <p class="sub center mt24"><button class="btn small" id="logout">Abmelden</button></p>`;
+    <p class="sub center mt24"><button class="btn small" id="logout">Abmelden</button></p>
+    <p class="sub center">Vio Version ${VERSION}</p>`;
   $('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); renderLogin(); };
 }
 

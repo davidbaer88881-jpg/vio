@@ -43,7 +43,7 @@ export function listen({ onInterim, onFinal, onEnd, onError }) {
     if (t) onFinal?.(t);
     onEnd?.(!!t);
   };
-  rec.start();
+  try { rec.start(); } catch (e) { rec = null; onError?.(`Mikrofon konnte nicht starten: ${e.message}`); }
 }
 export function stopListening() { try { rec?.abort(); } catch {} rec = null; }
 export const isListening = () => !!rec;

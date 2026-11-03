@@ -57,10 +57,13 @@ async function serveStatic(req, res, pathname) {
   try {
     const s = await stat(file);
     if (!s.isFile()) throw new Error();
-    const data = await readFile(file);
     const ext = extname(file);
-    const cache = ext === '.html' || p === '/sw.js' || ext === '.webmanifest' ? 'no-cache' : 'public, max-age=3600';
-    return send(res, 200, data, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': cache });
+    const etag = `W/"${s.size.toString(16)}-${Math.floor(s.mtimeMs).toString(16)}"`;
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag }); return res.end(); }
+    const data = await readFile(file);
+    // App-Dateien immer neu prüfen (günstig per ETag), damit Updates sofort ankommen; nur Icons dürfen länger im Cache bleiben
+    const cache = ext === '.png' ? 'public, max-age=86400' : 'no-cache';
+    return send(res, 200, data, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': cache, ETag: etag });
   } catch {
     // SPA-Fallback
     if (!extname(p)) return serveStatic(req, res, '/');

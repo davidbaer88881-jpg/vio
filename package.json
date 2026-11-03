@@ -1,0 +1,17 @@
+{
+  "name": "vio",
+  "version": "0.1.0",
+  "description": "Vio – persönlicher KI-Assistent (PWA + Backend, Claude API)",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "prestart": "node scripts/build-icons.js",
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "VIO_INSECURE_COOKIES=1 node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "set-password": "node --disable-warning=ExperimentalWarning scripts/set-password.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  }
+}

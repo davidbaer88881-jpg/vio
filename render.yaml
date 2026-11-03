@@ -1,0 +1,19 @@
+# Render Blueprint: kostenloser Web-Service (Free-Plan) mit Docker.
+# Daten werden über Supabase Storage gesichert (Free-Plan hat keinen festen Speicher).
+services:
+  - type: web
+    name: vio
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: VIO_INITIAL_PASSWORD
+        sync: false
+      - key: VIO_USER_NAME
+        value: David

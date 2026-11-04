@@ -1,6 +1,15 @@
 // Zentrale Konfiguration – alle Geheimnisse kommen ausschließlich aus Umgebungsvariablen.
 // Nichts davon wird jemals an das Frontend ausgeliefert.
 
+// Umgebungsvariablen tolerant lesen: Leerzeichen und Groß-/Kleinschreibung im Namen sind egal,
+// Leerzeichen/Anführungszeichen um den Wert werden entfernt (häufige Tippfehler beim Eintragen).
+const ENV = {};
+for (const [k, v] of Object.entries(process.env)) {
+  const key = k.trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (!(key in ENV) || k === key) ENV[key] = String(v ?? '').trim().replace(/^["']|["']$/g, '').trim();
+}
+export const env = (name) => ENV[name] ?? '';
+
 export const config = {
   port: Number(process.env.PORT) || 3000,
   dbPath: process.env.VIO_DB_PATH || './data/vio.db',
@@ -32,17 +41,17 @@ export const config = {
   publicUrl: (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
 
   // Google (Kalender + Gmail) – OAuth-Client aus der Google Cloud Console
-  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
-  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+  googleClientId: env('GOOGLE_CLIENT_ID'),
+  googleClientSecret: env('GOOGLE_CLIENT_SECRET'),
   googleApiBase: (process.env.GOOGLE_API_BASE || 'https://www.googleapis.com').replace(/\/$/, ''),
   googleTokenUrl: process.env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
   googleAuthUrl: process.env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth',
 
   // Telegram-Bot (von @BotFather)
-  telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  telegramToken: env('TELEGRAM_BOT_TOKEN'),
   // Telegram als eigenes Konto (my.telegram.org → API development tools)
-  telegramApiId: process.env.TELEGRAM_API_ID || '',
-  telegramApiHash: process.env.TELEGRAM_API_HASH || '',
+  telegramApiId: env('TELEGRAM_API_ID').replace(/\D/g, ''),
+  telegramApiHash: env('TELEGRAM_API_HASH'),
   telegramApiBase: (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, ''),
 
   // Schlüssel zum Verschlüsseln gespeicherter Zugangsdaten (Google-Token) in der Datenbank

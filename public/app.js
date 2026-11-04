@@ -76,7 +76,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.4.0';
+export const VERSION = '0.4.1';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -525,7 +525,12 @@ async function renderApps() {
         : tguser.configured
           ? `<p class="meta">Vio schreibt dann direkt aus deinem Telegram-Konto. Telegram schickt dir gleich einen Code <strong>in die Telegram-App</strong>.</p>
              <div id="tgu-step"><div class="ask"><input class="input" id="tgu-phone" type="tel" placeholder="+49 176 …" autocomplete="tel"><button class="btn primary small" id="tgu-send">Code senden</button></div></div>`
-          : `<p class="meta">Auf dem Server fehlen noch TELEGRAM_API_ID und TELEGRAM_API_HASH (von my.telegram.org). Anleitung: docs/INSTALLATION.md, Abschnitt „Telegram als dein Konto“.</p>`}
+          : `<p class="meta">Der Server sieht die Zugangsdaten von my.telegram.org noch nicht:</p>
+             <div class="check-list">
+               <div>${tguser.has_api_id ? '✅' : '❌'} <code>TELEGRAM_API_ID</code> ${tguser.has_api_id ? 'gefunden' : 'fehlt (nur die Zahl eintragen)'}</div>
+               <div>${tguser.has_api_hash ? (tguser.api_hash_ok ? '✅' : '⚠️') : '❌'} <code>TELEGRAM_API_HASH</code> ${tguser.has_api_hash ? (tguser.api_hash_ok ? 'gefunden' : 'gefunden, sieht aber falsch aus (32 Zeichen aus 0–9 und a–f)') : 'fehlt'}</div>
+             </div>
+             <p class="meta">In Render: Dienst „vio“ → Environment → Namen genau so schreiben → „Save, rebuild, and deploy“.</p>`}
     </div>
 
     <h2>Alle Verbindungen</h2>

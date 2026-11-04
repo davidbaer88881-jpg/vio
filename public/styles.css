@@ -192,3 +192,6 @@ pre { white-space: pre-wrap; background: rgba(255,255,255,.06); padding: 8px 10p
 .ev-time { font-size: 13px; color: var(--accent-2); min-width: 86px; font-variant-numeric: tabular-nums; }
 .row.conflict { border-color: var(--danger); }
 .hidden-field { display: none; }
+
+.check-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; font-size: 14px; }
+.check-list code, .card code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: 13px; }

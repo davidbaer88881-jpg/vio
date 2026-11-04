@@ -27,7 +27,10 @@ async function loadLib() {
 export const tgUserConfigured = () => !!(config.telegramApiId && config.telegramApiHash);
 export const tgUserStatus = (db) => {
   const s = getIntegration(db, 'telegram_user');
-  return { configured: tgUserConfigured(), connected: !!s, name: s?.name || '', phone: s?.phone ? s.phone.slice(0, 5) + '…' + s.phone.slice(-2) : '' };
+  return {
+    has_api_id: !!config.telegramApiId, has_api_hash: !!config.telegramApiHash,
+    api_hash_ok: /^[0-9a-f]{32}$/i.test(config.telegramApiHash),
+    configured: tgUserConfigured(), connected: !!s, name: s?.name || '', phone: s?.phone ? s.phone.slice(0, 5) + '…' + s.phone.slice(-2) : '' };
 };
 
 let client = null;

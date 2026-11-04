@@ -77,7 +77,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -194,7 +194,7 @@ async function renderHome() {
   `;
 
   // Mikrofon SOFORT im Tipp starten (Android erlaubt das nur direkt bei der Berührung), dann zum Chat wechseln
-  $('#orb').onclick = () => { newConversation(); startListening(); location.hash = '#/chat'; };
+  $('#orb').onclick = () => openConversation(); // Gesprächsmodus: Begrüßung, Zuhören, Antworten – im Wechsel
   $('#ask').onsubmit = (e) => {
     e.preventDefault();
     const q = e.target.q.value.trim(); if (!q) return;
@@ -361,14 +361,14 @@ function startListening() {
   updateMic();
 }
 
-async function sendMessage(text, viaVoice) {
+async function sendMessage(text, viaVoice, opts = {}) {
   if (state.streaming) return;
   if (!$('#messages')) { location.hash = '#/chat'; await renderChat(); }
   voice.stopSpeaking();
   if (!navigator.onLine) { await queueMessage({ kind: 'text', text }); return; }
 
   const s = state.settings || {};
-  const shouldSpeak = s.tts_mode === 'always' || (s.tts_mode !== 'never' && viaVoice);
+  const shouldSpeak = opts.forceSpeak || s.tts_mode === 'always' || (s.tts_mode !== 'never' && viaVoice);
   const speaker = shouldSpeak ? new voice.SentenceSpeaker(s) : null;
 
   state.messages.push({ role: 'user', content: text });
@@ -390,9 +390,9 @@ async function sendMessage(text, viaVoice) {
       text, conversationId: state.convId, signal: ac.signal, requestId: rid,
       onEvent: (ev, data) => {
         if (ev === 'meta') { reachedServer = true; state.convId = data.conversation_id; if (!state.convTitle) state.convTitle = text.slice(0, 60); }
-        else if (ev === 'delta') { reply.content += data.text; speaker?.push(data.text); if (!raf) raf = requestAnimationFrame(flush); }
+        else if (ev === 'delta') { reply.content += data.text; speaker?.push(data.text); opts.onUpdate?.(reply.content); if (!raf) raf = requestAnimationFrame(flush); }
         else if (ev === 'tool') { insertEvent(reply, data); }
-        else if (ev === 'error') { reply.content += (reply.content ? '\n\n' : '') + '⚠️ ' + data.message; }
+        else if (ev === 'error') { reply.content += (reply.content ? '\n\n' : '') + '⚠️ ' + data.message; opts.onUpdate?.(reply.content); if (speaker) speaker.push(' ' + data.message + ' '); }
       },
     });
   } catch (e) {
@@ -418,8 +418,111 @@ async function sendMessage(text, viaVoice) {
     if (history.replaceState && state.convId) history.replaceState(null, '', `#/chat/${state.convId}`);
   }
 
+  opts.onUpdate?.(reply.content);
+  if (opts.noLoop) return reply.content;
   // Freisprechmodus: nach Vios Antwort automatisch wieder zuhören
   if (viaVoice && state.handsfreeActive) voice.whenSpeechDone(() => { if (state.handsfreeActive && $('#mic')) startListening(); });
+}
+
+// ============================================================================
+//  Gesprächsmodus (großer Kreis): Vio begrüßt dich, hört zu, antwortet laut – immer im Wechsel
+// ============================================================================
+const convo = { active: false, phase: 'idle', silence: 0 };
+const PHASE_TEXT = {
+  greeting: 'Vio begrüßt dich …', listening: 'Ich höre zu …', thinking: 'Moment, ich denk kurz nach …',
+  speaking: 'Vio spricht – tippe zum Unterbrechen', idle: 'Tippe auf den Kreis, um zu sprechen', offline: 'Kein Netz – tippe zum Aufnehmen',
+};
+
+function convoEl() {
+  let el = $('#convo');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'convo'; el.className = 'convo'; el.hidden = true;
+  el.innerHTML = `
+    <button class="icon-btn convo-close" id="convo-close" aria-label="Gespräch beenden">✕</button>
+    <div class="convo-status" id="convo-status"></div>
+    <div class="convo-orb-wrap"><button class="convo-orb" id="convo-orb" aria-label="Sprechen">${ICON.mic}</button></div>
+    <div class="convo-you" id="convo-you"></div>
+    <div class="convo-vio" id="convo-vio"></div>
+    <div class="convo-hint">Sprich einfach los. Zum Beenden auf ✕ tippen.</div>`;
+  document.body.appendChild(el);
+  $('#convo-close').onclick = closeConversation;
+  $('#convo-orb').onclick = convoOrbTap;
+  return el;
+}
+function setPhase(p) {
+  convo.phase = p;
+  const el = convoEl();
+  el.dataset.phase = p;
+  $('#convo-status').textContent = PHASE_TEXT[p] || '';
+}
+window.addEventListener('vio-speaking', (e) => {
+  if (!convo.active) return;
+  if (e.detail) setPhase('speaking');
+});
+
+function openConversation() {
+  voice.unlockAudio(); // MUSS direkt beim Antippen passieren, sonst bleibt Vio auf Android stumm
+  convo.active = true; convo.silence = 0;
+  newConversation();
+  if (location.hash !== '#/chat') location.hash = '#/chat';
+  const el = convoEl(); el.hidden = false;
+  $('#convo-you').textContent = ''; $('#convo-vio').textContent = '';
+  document.body.classList.add('convo-open');
+  if (!navigator.onLine) { setPhase('offline'); return; }
+  const s = state.settings || {};
+  const name = s.user_name && s.user_name !== 'du' ? s.user_name : '';
+  const greet = new Date().getHours() < 11 ? `Guten Morgen${name ? ', ' + name : ''}! Was kann ich für dich tun?` : `Hey${name ? ' ' + name : ''}! Was kann ich für dich tun?`;
+  $('#convo-vio').textContent = greet;
+  setPhase('greeting');
+  voice.sayCached(greet, s).then(() => { if (convo.active && (convo.phase === 'greeting' || convo.phase === 'speaking')) convoListen(); });
+}
+
+function closeConversation() {
+  convo.active = false;
+  voice.stopSpeaking(); voice.stopListening();
+  if (state.recording) { state.recording.cancel(); state.recording = null; }
+  const el = $('#convo'); if (el) el.hidden = true;
+  document.body.classList.remove('convo-open');
+  updateMic();
+}
+
+function convoOrbTap() {
+  voice.unlockAudio();
+  if (convo.phase === 'offline') { if (state.recording) { finishRecording(); setPhase('offline'); } else { startRecording(); $('#convo-status').textContent = '🎙️ Aufnahme läuft – tippe zum Beenden'; } return; }
+  if (convo.phase === 'speaking' || convo.phase === 'greeting') { voice.stopSpeaking(); convoListen(); return; }
+  if (convo.phase === 'listening') { voice.stopListening(); setPhase('idle'); return; }
+  if (convo.phase === 'thinking') return;
+  convo.silence = 0; convoListen();
+}
+
+function convoListen() {
+  if (!convo.active) return;
+  if (!voice.canListen) { setPhase('idle'); toast('Spracherkennung geht hier nicht – bitte Chrome nutzen.'); return; }
+  setPhase('listening');
+  voice.listen({
+    onInterim: (t) => { $('#convo-you').textContent = t; },
+    onFinal: async (t) => {
+      convo.silence = 0;
+      $('#convo-you').textContent = t; $('#convo-vio').textContent = '';
+      setPhase('thinking');
+      await sendMessage(t, true, { forceSpeak: true, noLoop: true, onUpdate: (txt) => { const v = $('#convo-vio'); if (v) v.textContent = txt.replace(/[*_`#]/g, ''); } });
+      if (!convo.active) return;
+      await voice.speechDone();
+      if (convo.active) convoListen();
+    },
+    onEnd: (got) => {
+      if (got || !convo.active || convo.phase !== 'listening') return;
+      convo.silence++;
+      if (convo.silence >= 2) setPhase('idle'); else convoListen(); // einmal nochmal zuhören, dann Pause
+    },
+    onError: (msg, code) => {
+      if (!convo.active) return;
+      if (code === 'network') { setPhase('offline'); return; }
+      if (code === 'not-allowed') { setPhase('idle'); toast('Bitte erlaube das Mikrofon – dann auf den Kreis tippen.', 6000); return; }
+      setPhase('idle'); toast(msg, 5000);
+    },
+  });
 }
 
 // ============================================================================

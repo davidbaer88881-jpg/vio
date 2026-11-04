@@ -99,25 +99,58 @@ function finish() {
  *  Mehrere Teile werden parallel vorgeladen, aber streng nacheinander abgespielt. */
 let generation = 0;
 let playChain = Promise.resolve();
-async function fetchTts(text, settings, signal) {
+async function fetchTts(text, settings, signal, timeoutMs = 9000) {
+  // Kommt die natürliche Stimme nicht schnell genug (z. B. Server wacht gerade auf), spricht die Handy-Stimme
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  signal?.addEventListener('abort', () => ac.abort(), { once: true });
   const res = await fetch('/api/tts', {
-    method: 'POST', signal, credentials: 'same-origin',
+    method: 'POST', signal: ac.signal, credentials: 'same-origin',
     headers: { 'X-Vio': '1', 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: text.slice(0, 1500), voice: settings.gemini_voice }),
   });
+  clearTimeout(t);
   if (!res.ok) throw new Error('tts ' + res.status);
   return res.blob();
+}
+
+// ---------- Lautsprecher „entsperren“ ----------
+// Android spielt Ton nur ab, wenn er direkt durch Antippen gestartet wurde. Wir starten deshalb beim
+// Antippen einmal ein stummes Audio und benutzen dieses Element danach für alle Antworten.
+let sharedAudio = null;
+function silentWavUrl() {
+  const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+/** MUSS direkt im Tipp-Handler aufgerufen werden. */
+export function unlockAudio() {
+  try {
+    if (!sharedAudio) sharedAudio = new Audio();
+    sharedAudio.src = silentWavUrl();
+    sharedAudio.play().catch(() => {});
+  } catch {}
+  try { if (canSpeak) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch {}
 }
 function playBlob(blob, settings) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    audio.playbackRate = settings.speech_rate || 1;
-    currentAudio = audio;
-    const done = (ok) => { URL.revokeObjectURL(url); if (currentAudio === audio) currentAudio = null; resolve(ok); };
+    const audio = sharedAudio || new Audio();
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return; settled = true;
+      audio.onended = audio.onerror = audio.onpause = null;
+      URL.revokeObjectURL(url); if (currentAudio === audio) currentAudio = null; resolve(ok);
+    };
     audio.onended = () => done(true);
     audio.onerror = () => done(false);
-    audio.onpause = () => { if (!audio.ended) done(true); };
+    audio.onpause = () => { if (!audio.ended && currentAudio === audio) done(true); };
+    audio.src = url;
+    audio.playbackRate = settings.speech_rate || 1;
+    currentAudio = audio;
     audio.play().catch(() => done(false));
   });
 }
@@ -126,7 +159,7 @@ export function speakNatural(text, settings = {}) {
   if (!clean) return Promise.resolve();
   const myGen = generation;
   if (!ttsAbort || ttsAbort.signal.aborted) ttsAbort = new AbortController();
-  const audioPromise = fetchTts(clean, settings, ttsAbort.signal).catch(() => null); // sofort vorladen
+  const audioPromise = (settings._cachedBlob ? Promise.resolve(settings._cachedBlob) : fetchTts(clean, settings, ttsAbort.signal, settings._timeoutMs)).catch(() => null); // sofort vorladen
   begin();
   playChain = playChain.then(async () => {
     if (myGen !== generation) return;
@@ -156,8 +189,33 @@ export function speak(text, settings = {}) {
   u.rate = settings.speech_rate || 1;
   u.pitch = settings.speech_pitch ?? 0.85; // etwas tiefer = männlicher Klang
   begin();
-  u.onend = finish; u.onerror = finish;
+  // Android-Chrome feuert „onend“ manchmal nicht → Sicherheits-Timer, damit das Gespräch nicht hängen bleibt
+  let ended = false;
+  const myGen = generation;
+  const end = () => { if (ended) return; ended = true; clearTimeout(safety); if (myGen === generation) finish(); };
+  const safety = setTimeout(end, 4000 + clean.length * 90);
+  u.onend = end; u.onerror = end;
   speechSynthesis.speak(u);
+}
+
+/** Promise, die erfüllt wird, wenn Vio fertig gesprochen hat. */
+export function speechDone() { return new Promise((r) => whenSpeechDone(r)); }
+
+/** Begrüßung: einmal erzeugt, danach aus dem Zwischenspeicher → sofort hörbar. */
+export async function sayCached(text, settings = {}) {
+  if (settings.voice_engine !== 'gemini' || !('caches' in window)) { speak(text, settings); return speechDone(); }
+  const key = `/tts-cache/${encodeURIComponent(settings.gemini_voice || 'Puck')}/${encodeURIComponent(text)}`;
+  try {
+    const cache = await caches.open('vio-tts-v1');
+    const hit = await cache.match(key);
+    if (hit) { speakNatural(text, { ...settings, _cachedBlob: await hit.blob() }); return speechDone(); }
+    const blob = await fetchTts(cleanForSpeech(text), settings, null, 3500); // max. 3,5 s warten
+    cache.put(key, new Response(blob, { headers: { 'content-type': 'audio/wav' } })).catch(() => {});
+    speakNatural(text, { ...settings, _cachedBlob: blob });
+  } catch {
+    speak(text, settings); // zu langsam / Limit → Handy-Stimme
+  }
+  return speechDone();
 }
 export function whenSpeechDone(cb) { if (queue === 0) cb(); else onIdle = cb; }
 export function stopSpeaking() {

@@ -1,6 +1,6 @@
 // Service Worker: macht Vio installierbar und lädt die Oberfläche blitzschnell.
 // API-Antworten werden NIE zwischengespeichert (private Daten).
-const CACHE = 'vio-shell-v8';
+const CACHE = 'vio-shell-v9';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/api.js', '/voice.js', '/outbox.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

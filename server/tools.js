@@ -2,6 +2,7 @@ import { evaluateAction, BUDGETED_ACTIONS, FORBIDDEN_ACTIONS, ALLOWED_PAYMENT_ME
 import { getSettings, getProtected } from './db.js';
 import * as google from './google.js';
 import * as telegram from './telegram.js';
+import * as tguser from './tguser.js';
 
 const S = (description, extra = {}) => ({ type: 'string', description, ...extra });
 const DATE_HINT = 'Berliner Ortszeit im Format JJJJ-MM-TT HH:MM (oder nur JJJJ-MM-TT für ganztägig).';
@@ -147,6 +148,19 @@ const TELEGRAM_TOOLS = [
   },
 ];
 
+const TG_USER_TOOLS = [
+  {
+    name: 'telegram_dm_send',
+    description: 'Schickt SOFORT eine Telegram-Nachricht aus dem eigenen Telegram-Konto des Nutzers an einen Kontakt oder eine Gruppe (Empfänger sieht sie vom Nutzer). Benutzen, wenn der Nutzer sagt "schreib X auf Telegram …". Nicht vorher nachfragen – der Nutzer will, dass es direkt rausgeht. Bei mehreren Treffern nachfragen, welcher gemeint ist.',
+    input_schema: { type: 'object', properties: { to: S('Name des Kontakts/der Gruppe wie in Telegram (oder @Benutzername)'), text: S('Die Nachricht, so wie sie verschickt werden soll') }, required: ['to', 'text'] },
+  },
+  {
+    name: 'telegram_dm_read',
+    description: 'Liest die letzten Nachrichten eines Telegram-Chats des Nutzers (zum Zusammenfassen oder um zu antworten).',
+    input_schema: { type: 'object', properties: { chat: S('Name des Kontakts/der Gruppe'), limit: { type: 'integer', description: 'Anzahl (Standard 15, max. 50)' } }, required: ['chat'] },
+  },
+];
+
 /** Welche Werkzeuge gerade verfügbar sind – abhängig davon, was verbunden ist. */
 export function getToolDefs(db) {
   const tools = [...BASE_TOOLS];
@@ -154,6 +168,7 @@ export function getToolDefs(db) {
   if (g.connected && g.scope.includes('calendar')) tools.push(...CALENDAR_TOOLS);
   if (g.connected && g.scope.includes('gmail')) tools.push(...GMAIL_TOOLS);
   if (telegram.telegramStatus(db).linked) tools.push(...TELEGRAM_TOOLS);
+  if (tguser.tgUserStatus(db).connected) tools.push(...TG_USER_TOOLS);
   return tools;
 }
 export const TOOL_DEFS = BASE_TOOLS; // für Tests/Abwärtskompatibilität
@@ -297,6 +312,19 @@ async function runToolInner(db, name, input, ctx) {
       if (input.user_confirmed !== true) return { result: `Noch nicht gesendet. Zeig dem Nutzer den Text für „${g.title}“ und frag nach Bestätigung.` };
       await telegram.sendToChat(g.chat_id, input.text);
       return { result: `In „${g.title}“ gesendet.`, event: { type: 'tool', label: `📨 In „${g.title}“ gesendet`, kind: 'allow' } };
+    }
+    // ---------- Telegram als eigenes Konto ----------
+    case 'telegram_dm_send': {
+      const r = await tguser.sendAsMe(db, input.to, input.text);
+      if (r.status === 'not_found') return { result: `Keinen Telegram-Chat namens „${input.to}“ gefunden. Frag nach dem genauen Namen oder @Benutzernamen.` };
+      if (r.status === 'ambiguous') return { result: `Mehrere Treffer: ${r.options.join('; ')}. Frag den Nutzer, wen er meint, und sende dann mit dem genauen Namen.` };
+      return { result: `Gesendet an ${r.to} (aus dem Konto des Nutzers).`, event: { type: 'tool', label: `✈️ Telegram an ${r.to} gesendet: „${String(input.text).slice(0, 80)}“`, kind: 'allow' } };
+    }
+    case 'telegram_dm_read': {
+      const r = await tguser.readChat(db, input.chat, input.limit);
+      if (r.status === 'not_found') return { result: `Keinen Chat „${input.chat}“ gefunden.` };
+      if (r.status === 'ambiguous') return { result: `Mehrere Treffer: ${r.options.join('; ')}. Frag nach.` };
+      return { result: `Chat mit ${r.chat}:\n${r.lines.join('\n') || '(keine Textnachrichten)'}`, event: { type: 'tool', label: `✈️ Chat mit ${r.chat} gelesen` } };
     }
     default:
       return { result: `Unbekanntes Werkzeug: ${name}` };

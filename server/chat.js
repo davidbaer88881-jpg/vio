@@ -4,6 +4,7 @@ import { buildSystemPrompt } from './persona.js';
 import { getToolDefs, runTool } from './tools.js';
 import { googleStatus } from './google.js';
 import { telegramStatus } from './telegram.js';
+import { tgUserStatus } from './tguser.js';
 import { getConnections } from './connections.js';
 import * as claude from './providers/claude.js';
 import * as gemini from './providers/gemini.js';
@@ -62,7 +63,7 @@ export async function runChatTurn(db, { conversationId, text, channel = 'app' },
     facts: db.prepare("SELECT id, text FROM facts WHERE status = 'active' ORDER BY id").all(),
     openTasks: db.prepare('SELECT id, title, due_at FROM tasks WHERE done = 0 ORDER BY COALESCE(due_at, created_at) LIMIT 30').all(),
     connections: getConnections(settings, db),
-    google: googleStatus(db), telegram: telegramStatus(db), channel,
+    google: googleStatus(db), telegram: telegramStatus(db), tguser: tgUserStatus(db), channel,
   });
 
   let fullText = '';

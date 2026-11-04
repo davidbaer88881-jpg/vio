@@ -151,3 +151,31 @@ Render Free hat 750 Stunden pro Monat. Das reicht genau für einen Dienst, der r
 - **Mit Vio in Telegram schreiben:** einfach dem Bot schreiben. Er antwortet nur dir, Fremde werden abgewiesen.
 - **WhatsApp/SMS:** „Schreib Lisa, dass ich später komme“. Vio formuliert die Nachricht, und ein Knopf öffnet WhatsApp mit dem fertigen Text. Abschicken tust du selbst, weil es keine offizielle Schnittstelle für private Nummern gibt.
 - **Telefon:** „Ich will bei der Werkstatt einen Termin ausmachen“. Vio schreibt einen Gesprächsleitfaden, und der Knopf öffnet dein Telefon. Dass Vio selbst anruft, geht nur über einen kostenpflichtigen Telefondienst.
+
+## D) Telegram als dein Konto (Vio schreibt direkt in deinem Namen)
+
+Damit sagst du nur „Schreib Josua auf Telegram, dass ich später komme“, und Vio schickt es sofort aus **deinem** Telegram-Konto ab.
+
+**1. Zugangsdaten bei Telegram holen (am besten am PC):**
+1. Öffne **my.telegram.org** und gib deine Telefonnummer ein (`+49…`).
+2. Telegram schickt dir einen Code **in die Telegram-App** (nicht per SMS). Gib ihn ein.
+3. Klicke auf **„API development tools“**.
+4. Fülle das Formular aus: App title `Vio`, Short name `vioapp` (nur Buchstaben), Platform **Android**. Den Rest kannst du leer lassen. Dann **Create application**.
+5. Du bekommst **App api_id** (eine Zahl) und **App api_hash** (lange Zeichenkette).
+   Kommt nur „ERROR“: VPN/Werbeblocker ausschalten, einen anderen Browser nehmen oder es später nochmal versuchen. Das ist ein bekanntes Problem bei Telegram.
+
+**2. In Render eintragen** (Dienst vio → Environment → Add variable):
+| Name | Wert |
+|---|---|
+| `TELEGRAM_API_ID` | die Zahl |
+| `TELEGRAM_API_HASH` | die Zeichenkette |
+Dann **Save, rebuild, and deploy**. Diesmal dauert das Bauen etwas länger, weil Render die Telegram-Bibliothek installiert.
+
+**3. In Vio anmelden:**
+Öffne **Apps** und scrolle zu **„Telegram als du (dein Konto)“**. Gib deine Nummer ein, tippe auf **Code senden** und trag den Code aus der Telegram-App ein. Hast du eine zweistufige Bestätigung (Cloud-Passwort), gibst du danach dein Telegram-Passwort ein.
+
+**Gut zu wissen:**
+- Die Anmeldung ist wie ein weiteres Gerät. Du siehst sie in Telegram unter **Einstellungen → Geräte** und kannst sie dort jederzeit beenden.
+- Sicherheitsgrenze: höchstens **20 Nachrichten pro Stunde**. Massennachrichten sind nicht möglich, weil Telegram Konten bei Spam sperrt.
+- Gibt es mehrere Treffer (z. B. zwei „Lisa“), fragt Vio nach, statt zu raten.
+- Die Sitzung liegt verschlüsselt in der Datenbank. Mit „Abmelden“ in Vio wird sie gelöscht und bei Telegram beendet.

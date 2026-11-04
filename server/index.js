@@ -11,6 +11,7 @@ import { runChatTurnCollect } from './chat.js';
 import * as google from './google.js';
 import * as telegram from './telegram.js';
 import { synthesize, GEMINI_VOICES } from './tts.js';
+import * as tguser from './tguser.js';
 import { startScheduler, buildBriefing, tick } from './scheduler.js';
 import { getConnections } from './connections.js';
 
@@ -288,6 +289,7 @@ export function createApp(db) {
         return json(res, 200, {
           connections: getConnections(getSettings(db), db),
           google: { ...google.googleStatus(db), configured: google.googleConfigured(), redirect_uri: config.publicUrl ? google.redirectUri() : '' },
+          tguser: tguser.tgUserStatus(db),
           telegram: { ...telegram.telegramStatus(db), groups: db.prepare('SELECT title FROM telegram_chats ORDER BY title').all().map((g) => g.title) },
         });
       }
@@ -315,6 +317,21 @@ export function createApp(db) {
         await telegram.sendToMe(db, '👋 Test von Vio – Telegram funktioniert!');
         return json(res, 200, { ok: true });
       }
+      // --- Telegram als eigenes Konto ---
+      if (pathname === '/api/tguser/start' && method === 'POST') {
+        const { phone } = await readJson(req);
+        try { return json(res, 200, await tguser.loginStart(phone)); } catch (e) { return json(res, 400, { error: e.message }); }
+      }
+      if (pathname === '/api/tguser/code' && method === 'POST') {
+        const { code } = await readJson(req);
+        try { return json(res, 200, await tguser.loginCode(db, code)); } catch (e) { return json(res, 400, { error: e.message }); }
+      }
+      if (pathname === '/api/tguser/password' && method === 'POST') {
+        const { password } = await readJson(req);
+        try { return json(res, 200, await tguser.loginPassword(db, password)); } catch (e) { return json(res, 400, { error: e.message }); }
+      }
+      if (pathname === '/api/tguser/logout' && method === 'POST') { await tguser.logout(db); return json(res, 200, { ok: true }); }
+
       if (pathname === '/api/briefing' && method === 'POST') {
         const text = await buildBriefing(db);
         if (telegram.telegramStatus(db).linked) await telegram.sendToMe(db, text);

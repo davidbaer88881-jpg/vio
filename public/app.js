@@ -76,7 +76,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.3.1';
+export const VERSION = '0.4.0';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -486,7 +486,7 @@ function taskRowWithDelete(t) { return taskRow(t).replace(/<\/div>\s*$/, `<butto
 //  Apps & Verbindungen
 // ============================================================================
 async function renderApps() {
-  const { connections, google, telegram } = await api('/api/connections');
+  const { connections, google, telegram, tguser } = await api('/api/connections');
   if (state.query?.get('google') === 'ok') toast('Google ist verbunden 🎉');
   if (state.query?.get('google_error')) toast('Google: ' + state.query.get('google_error'), 6000);
   const LABEL = { connected: 'Verbunden', available: 'Bereit zum Verbinden', needs_setup: 'Einrichtung nötig', limited: 'Vorbereiten', missing_key: 'Schlüssel fehlt', planned: 'Geplant' };
@@ -516,6 +516,18 @@ async function renderApps() {
           : `<p class="meta">Auf dem Server fehlt noch TELEGRAM_BOT_TOKEN. Die Anleitung steht in docs/INSTALLATION.md (Abschnitt „Telegram verbinden“).</p>`}
     </div>
 
+    <h2>Telegram als du (dein Konto)</h2>
+    <div class="card" id="tgu-card">
+      ${tguser.connected
+        ? `<div class="row-flat"><span class="dot ok"></span><div class="grow">Angemeldet als <strong>${esc(tguser.name)}</strong> (${esc(tguser.phone)}). Sag z. B. „Schreib Josua auf Telegram, dass ich später komme“ – Vio schickt es sofort in deinem Namen.</div></div>
+           <p class="meta">Sicherheitsgrenze: höchstens 20 Nachrichten pro Stunde. Jede gesendete Nachricht steht im Chat.</p>
+           <div class="btn-row"><button class="btn small danger" id="tgu-off">Abmelden</button></div>`
+        : tguser.configured
+          ? `<p class="meta">Vio schreibt dann direkt aus deinem Telegram-Konto. Telegram schickt dir gleich einen Code <strong>in die Telegram-App</strong>.</p>
+             <div id="tgu-step"><div class="ask"><input class="input" id="tgu-phone" type="tel" placeholder="+49 176 …" autocomplete="tel"><button class="btn primary small" id="tgu-send">Code senden</button></div></div>`
+          : `<p class="meta">Auf dem Server fehlen noch TELEGRAM_API_ID und TELEGRAM_API_HASH (von my.telegram.org). Anleitung: docs/INSTALLATION.md, Abschnitt „Telegram als dein Konto“.</p>`}
+    </div>
+
     <h2>Alle Verbindungen</h2>
     <div class="list">
       ${connections.map((c) => `<div class="row">
@@ -542,6 +554,31 @@ async function renderApps() {
   });
   $('#t-test')?.addEventListener('click', async () => { try { await api('/api/telegram/test', { method: 'POST' }); toast('Gesendet – schau in Telegram'); } catch (e) { toast(e.message); } });
   $('#t-brief')?.addEventListener('click', async () => { try { await api('/api/briefing', { method: 'POST' }); toast('Tagesübersicht gesendet'); } catch (e) { toast(e.message); } });
+  $('#tgu-off')?.addEventListener('click', async () => { if (!confirm('Vio von deinem Telegram-Konto abmelden?')) return; await api('/api/tguser/logout', { method: 'POST' }); renderApps(); });
+  $('#tgu-send')?.addEventListener('click', async (ev) => {
+    ev.target.disabled = true;
+    try {
+      await api('/api/tguser/start', { method: 'POST', body: { phone: $('#tgu-phone').value } });
+      $('#tgu-step').innerHTML = `<p class="meta">Code ist unterwegs – schau in deine Telegram-App (Chat „Telegram“).</p>
+        <div class="ask"><input class="input" id="tgu-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code"><button class="btn primary small" id="tgu-ok">Bestätigen</button></div>`;
+      $('#tgu-code').focus();
+      $('#tgu-ok').onclick = async (e2) => {
+        e2.target.disabled = true;
+        try {
+          const r = await api('/api/tguser/code', { method: 'POST', body: { code: $('#tgu-code').value } });
+          if (r.needs_password) {
+            $('#tgu-step').innerHTML = `<p class="meta">Dein Konto hat eine zweistufige Bestätigung. Bitte dein Telegram-Passwort eingeben.</p>
+              <div class="ask"><input class="input" id="tgu-pw" type="password" placeholder="Telegram-Passwort"><button class="btn primary small" id="tgu-pwok">Anmelden</button></div>`;
+            $('#tgu-pwok').onclick = async (e3) => {
+              e3.target.disabled = true;
+              try { await api('/api/tguser/password', { method: 'POST', body: { password: $('#tgu-pw').value } }); toast('Telegram-Konto verbunden 🎉'); renderApps(); }
+              catch (err) { toast(err.message, 5000); e3.target.disabled = false; }
+            };
+          } else { toast('Telegram-Konto verbunden 🎉'); renderApps(); }
+        } catch (err) { toast(err.message, 5000); e2.target.disabled = false; }
+      };
+    } catch (err) { toast(err.message, 6000); ev.target.disabled = false; }
+  });
   $('#t-off')?.addEventListener('click', async () => { if (!confirm('Telegram trennen?')) return; await api('/api/telegram/unlink', { method: 'POST' }); renderApps(); });
 }
 

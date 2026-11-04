@@ -40,6 +40,9 @@ export const config = {
 
   // Telegram-Bot (von @BotFather)
   telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  // Telegram als eigenes Konto (my.telegram.org → API development tools)
+  telegramApiId: process.env.TELEGRAM_API_ID || '',
+  telegramApiHash: process.env.TELEGRAM_API_HASH || '',
   telegramApiBase: (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, ''),
 
   // Schlüssel zum Verschlüsseln gespeicherter Zugangsdaten (Google-Token) in der Datenbank

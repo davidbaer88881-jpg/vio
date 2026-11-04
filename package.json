@@ -1,6 +1,6 @@
 {
   "name": "vio",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Vio – persönlicher KI-Assistent (PWA + Backend, Claude API)",
   "type": "module",
   "private": true,
@@ -13,5 +13,8 @@
     "dev": "VIO_INSECURE_COOKIES=1 node --disable-warning=ExperimentalWarning --watch server/index.js",
     "set-password": "node --disable-warning=ExperimentalWarning scripts/set-password.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "telegram": "^2.22.0"
   }
 }

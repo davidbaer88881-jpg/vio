@@ -195,3 +195,8 @@ pre { white-space: pre-wrap; background: rgba(255,255,255,.06); padding: 8px 10p
 
 .check-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; font-size: 14px; }
 .check-list code, .card code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+
+/* v0.5: Offline */
+.offline-bar { background: #3a2d12; border: 1px solid var(--warn); color: var(--warn); border-radius: 12px; padding: 8px 12px; font-size: 13px; margin-bottom: 8px; }
+.msg.user.pending { opacity: .75; border: 1px dashed rgba(255,255,255,.5); }
+.pending-note { font-size: 12px; opacity: .85; margin-top: 4px; }

@@ -22,6 +22,8 @@ export const config = {
   geminiFallbacks: (process.env.VIO_GEMINI_FALLBACKS ?? 'gemini-flash-lite-latest').split(',').map((s) => s.trim()).filter(Boolean),
   geminiTtsModels: (process.env.VIO_GEMINI_TTS_MODELS ?? 'gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts')
     .split(',').map((s) => s.trim()).filter(Boolean),
+  // Wie viel Gemini vor der Antwort nachdenkt: minimal (schnell) | low | medium | high | default
+  geminiThinking: env('VIO_GEMINI_THINKING') || 'minimal',
   retryDelayMs: Number(process.env.VIO_RETRY_DELAY_MS ?? 1500),
 
   // KI-Gehirn 2: Claude (kostenpflichtig, Guthaben auf console.anthropic.com)

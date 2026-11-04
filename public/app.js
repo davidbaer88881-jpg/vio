@@ -1,4 +1,5 @@
-import { api, streamChat, AuthError } from './api.js';
+import { api, streamChat, AuthError, isNetworkError } from './api.js';
+import * as outbox from './outbox.js';
 import * as voice from './voice.js';
 
 // ============================================================================
@@ -76,7 +77,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.4.1';
+export const VERSION = '0.5.0';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -108,6 +109,7 @@ async function route() {
     await fn(arg);
   } catch (e) {
     if (e instanceof AuthError) return renderLogin();
+    if (isNetworkError(e)) return renderOffline(name);
     view().innerHTML = `<div class="empty">Fehler: ${esc(e.message)}</div>`;
   }
   window.scrollTo(0, name === 'chat' ? document.body.scrollHeight : 0);
@@ -244,11 +246,15 @@ function newConversation() {
 
 async function renderChat(id) {
   if (id && Number(id) !== state.convId) {
-    const conv = await api(`/api/conversations/${Number(id)}`);
-    state.convId = conv.id; state.convTitle = conv.title;
-    state.messages = conv.messages.map((m) => ({ role: m.role, content: m.content }));
+    try {
+      const conv = await api(`/api/conversations/${Number(id)}`);
+      state.convId = conv.id; state.convTitle = conv.title;
+      state.messages = conv.messages.map((m) => ({ role: m.role, content: m.content }));
+      if (conv.running) { state.resumeConv = conv.id; setTimeout(resumeIfNeeded, 1500); }
+    } catch (e) { if (!isNetworkError(e)) throw e; }
   }
-  if (!state.settings) state.settings = (await api('/api/settings')).settings;
+  if (!state.settings) state.settings = cachedSettings() || (await api('/api/settings')).settings;
+  await addPendingBubbles();
 
   view().innerHTML = `
     <section class="chat-view">
@@ -258,6 +264,7 @@ async function renderChat(id) {
         <a class="icon-btn" href="#/history" aria-label="Verlauf">${ICON.history}</a>
         <button class="icon-btn" id="new-chat" aria-label="Neues Gespräch">${ICON.plus}</button>
       </div>
+      <div class="offline-bar" id="offline-bar" ${navigator.onLine ? 'hidden' : ''}>📴 Kein Netz – deine Nachrichten und Sprachaufnahmen werden gespeichert und automatisch gesendet, sobald du wieder Netz hast.</div>
       <div class="messages" id="messages"></div>
       <div class="listen-hint" id="hint"></div>
       <form class="composer" id="composer">
@@ -279,6 +286,7 @@ async function renderChat(id) {
     sendMessage(t, false);
   };
   $('#mic').onclick = () => {
+    if (state.recording) { finishRecording(); return; }
     if (voice.isListening()) { voice.stopListening(); state.handsfreeActive = false; updateMic(); return; }
     if (voice.isSpeaking()) { voice.stopSpeaking(); } // Unterbrechen
     startListening();
@@ -301,7 +309,7 @@ function renderMessages() {
   }
   box.innerHTML = state.messages.map((m, i) => {
     if (m.role === 'event') return m.card ? `<div class="action-card">${m.html}</div>` : `<div class="event ${m.kind || ''}">${m.html}</div>`;
-    if (m.role === 'user') return `<div class="msg user">${esc(m.content).replace(/\n/g, '<br>')}</div>`;
+    if (m.role === 'user') return `<div class="msg user ${m.pending ? 'pending' : ''}">${esc(m.content).replace(/\n/g, '<br>')}${m.pending ? '<div class="pending-note">⏳ wird gesendet, sobald du Netz hast</div>' : ''}</div>`;
     return `<div class="msg assistant ${m.typing ? 'typing' : ''}" data-i="${i}">${md(m.content)}${!m.typing && m.content ? `<button class="speak" data-speak="${i}" aria-label="Vorlesen">${ICON.speaker}</button>` : ''}</div>`;
   }).join('');
   box.querySelectorAll('[data-speak]').forEach((b) => (b.onclick = () => { voice.stopSpeaking(); voice.say(state.messages[b.dataset.speak].content, state.settings); }));
@@ -320,28 +328,35 @@ function updateSendBtn() {
 }
 function updateMic() {
   const m = $('#mic'); if (!m) return;
-  m.classList.toggle('listening', voice.isListening());
+  m.classList.toggle('listening', voice.isListening() || !!state.recording);
   m.classList.toggle('speaking', !voice.isListening() && voice.isSpeaking());
   const hint = $('#hint');
-  if (hint) hint.textContent = voice.isListening() ? 'Ich höre zu …' : voice.isSpeaking() ? 'Vio spricht – tippe aufs Mikro zum Unterbrechen' : state.handsfreeActive ? 'Freisprechmodus aktiv' : '';
+  if (hint) hint.textContent = state.recording ? '🎙️ Aufnahme läuft (ohne Netz) – tippe aufs Mikro zum Beenden' : voice.isListening() ? 'Ich höre zu …' : voice.isSpeaking() ? 'Vio spricht – tippe aufs Mikro zum Unterbrechen' : state.handsfreeActive ? 'Freisprechmodus aktiv' : '';
 }
 window.addEventListener('vio-speaking', updateMic);
 
 function stopAll() {
+  if (state.streaming && state.rid) api('/api/chat/stop', { method: 'POST', body: { request_id: state.rid } }).catch(() => {});
   state.streaming?.abort();
+  if (state.recording) { state.recording.cancel(); state.recording = null; }
   voice.stopSpeaking(); voice.stopListening();
   state.handsfreeActive = false;
   updateMic();
 }
 
 function startListening() {
+  if (!navigator.onLine) { startRecording(); return; } // ohne Netz: Aufnahme speichern, später umwandeln
   if (!voice.canListen) { toast('Spracherkennung geht hier nicht – bitte Chrome auf Android nutzen.'); return; }
   state.handsfreeActive = !!state.settings?.handsfree;
   voice.listen({
     onInterim: (t) => { const i = $('#input'); if (i) i.value = t; },
     onFinal: (t) => { const i = $('#input'); if (i) i.value = ''; sendMessage(t, true); },
     onEnd: (gotText) => { if (!gotText) state.handsfreeActive = false; updateMic(); },
-    onError: (msg) => { toast(msg, 5000); state.handsfreeActive = false; updateMic(); },
+    onError: (msg, code) => {
+      state.handsfreeActive = false;
+      if (code === 'network') { toast('Kein Netz für die Spracherkennung – ich nehme stattdessen auf und sende später.', 4000); startRecording(); return; }
+      toast(msg, 5000); updateMic();
+    },
   });
   updateMic();
 }
@@ -350,6 +365,7 @@ async function sendMessage(text, viaVoice) {
   if (state.streaming) return;
   if (!$('#messages')) { location.hash = '#/chat'; await renderChat(); }
   voice.stopSpeaking();
+  if (!navigator.onLine) { await queueMessage({ kind: 'text', text }); return; }
 
   const s = state.settings || {};
   const shouldSpeak = s.tts_mode === 'always' || (s.tts_mode !== 'never' && viaVoice);
@@ -361,7 +377,9 @@ async function sendMessage(text, viaVoice) {
   renderMessages();
 
   const ac = new AbortController();
-  state.streaming = ac; updateSendBtn();
+  const rid = (crypto.randomUUID?.() || String(Math.random()).slice(2)) + '';
+  state.streaming = ac; state.rid = rid; updateSendBtn();
+  let reachedServer = false;
 
   let pending = '';
   let raf = 0;
@@ -369,9 +387,9 @@ async function sendMessage(text, viaVoice) {
 
   try {
     await streamChat({
-      text, conversationId: state.convId, signal: ac.signal,
+      text, conversationId: state.convId, signal: ac.signal, requestId: rid,
       onEvent: (ev, data) => {
-        if (ev === 'meta') { state.convId = data.conversation_id; if (!state.convTitle) state.convTitle = text.slice(0, 60); }
+        if (ev === 'meta') { reachedServer = true; state.convId = data.conversation_id; if (!state.convTitle) state.convTitle = text.slice(0, 60); }
         else if (ev === 'delta') { reply.content += data.text; speaker?.push(data.text); if (!raf) raf = requestAnimationFrame(flush); }
         else if (ev === 'tool') { insertEvent(reply, data); }
         else if (ev === 'error') { reply.content += (reply.content ? '\n\n' : '') + '⚠️ ' + data.message; }
@@ -379,8 +397,18 @@ async function sendMessage(text, viaVoice) {
     });
   } catch (e) {
     if (e instanceof AuthError) return renderLogin();
-    if (e.name !== 'AbortError') reply.content += (reply.content ? '\n\n' : '') + '⚠️ Die Verbindung ist abgerissen – vermutlich startet der Server gerade neu oder wacht auf. Schick die Nachricht in ein paar Sekunden einfach nochmal.';
-    else reply.content += reply.content ? ' …' : '(abgebrochen)';
+    if (e.name === 'AbortError') reply.content += reply.content ? ' …' : '(abgebrochen)';
+    else if (!reachedServer && isNetworkError(e)) {
+      // Nachricht ist nie beim Server angekommen → in die Warteschlange
+      state.messages.splice(state.messages.indexOf(reply), 1);
+      state.messages.splice(state.messages.findLastIndex((m) => m.role === 'user' && m.content === text), 1);
+      await queueMessage({ kind: 'text', text });
+    } else if (reachedServer) {
+      // Verbindung weg, aber Vio arbeitet auf dem Server weiter → Antwort später abholen
+      reply.content += (reply.content ? ' …' : '') + '\n\n⏳ Vio arbeitet weiter – die Antwort erscheint hier, sobald du wieder verbunden bist.';
+      state.resumeConv = state.convId;
+      setTimeout(resumeIfNeeded, 2500);
+    } else reply.content += (reply.content ? '\n\n' : '') + '⚠️ Da ist etwas schiefgelaufen. Schick die Nachricht bitte nochmal.';
   } finally {
     reply.typing = false;
     state.streaming = null;
@@ -392,6 +420,126 @@ async function sendMessage(text, viaVoice) {
 
   // Freisprechmodus: nach Vios Antwort automatisch wieder zuhören
   if (viaVoice && state.handsfreeActive) voice.whenSpeechDone(() => { if (state.handsfreeActive && $('#mic')) startListening(); });
+}
+
+// ============================================================================
+//  Ohne Netz: Warteschlange, Aufnahme, später senden; Antworten nach Rückkehr abholen
+// ============================================================================
+function cachedSettings() { try { return JSON.parse(localStorage.getItem('vio-settings') || 'null'); } catch { return null; } }
+function cacheSettings(s) { try { localStorage.setItem('vio-settings', JSON.stringify(s)); } catch {} }
+
+async function queueMessage(item) {
+  const id = await outbox.add({ ...item, convId: state.convId || null });
+  state.messages.push({ role: 'user', content: item.kind === 'audio' ? `🎙️ Sprachnachricht (${item.seconds || '?'} s)` : item.text, pending: true, outboxId: id });
+  renderMessages();
+  toast(navigator.onLine ? 'Wird gleich gesendet …' : 'Gespeichert – wird gesendet, sobald du Netz hast 📴');
+  if (navigator.onLine) flushOutbox();
+}
+
+async function addPendingBubbles() {
+  try {
+    const items = (await outbox.all()).filter((i) => (i.convId || null) === (state.convId || null) || (!i.convId && state.messages.some((m) => m.outboxId === i.id)));
+    for (const i of items) {
+      if (state.messages.some((m) => m.outboxId === i.id)) continue;
+      state.messages.push({ role: 'user', content: i.kind === 'audio' ? `🎙️ Sprachnachricht (${i.seconds || '?'} s)` : i.text, pending: true, outboxId: i.id });
+    }
+  } catch {}
+}
+
+async function startRecording() {
+  if (!voice.canRecord) { toast('Aufnehmen wird hier nicht unterstützt.'); return; }
+  try {
+    state.recording = await voice.startRecording();
+    updateMic();
+  } catch { toast('Mikrofon nicht verfügbar – bitte Zugriff erlauben.'); state.recording = null; updateMic(); }
+}
+async function finishRecording() {
+  const rec = state.recording; state.recording = null; updateMic();
+  if (!rec) return;
+  try {
+    const blob = await rec.stop();
+    const seconds = Math.max(1, Math.round((Date.now() - rec.started) / 1000));
+    if (seconds < 1 || blob.size < 2000) { toast('Aufnahme zu kurz.'); return; }
+    await queueMessage({ kind: 'audio', blob, seconds });
+  } catch (e) { toast('Aufnahme fehlgeschlagen: ' + e.message); }
+}
+
+let flushing = false;
+async function flushOutbox() {
+  if (flushing || !navigator.onLine) return;
+  flushing = true;
+  const createdFor = new Map(); // Offline begonnene neue Gespräche → Server-ID
+  try {
+    for (const item of await outbox.all()) {
+      let text = item.text;
+      if (item.kind === 'audio') {
+        const res = await fetch('/api/transcribe', { method: 'POST', credentials: 'same-origin', headers: { 'X-Vio': '1', 'Content-Type': 'audio/wav' }, body: item.blob });
+        if (res.status === 401) throw new AuthError();
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Spracherkennung fehlgeschlagen');
+        text = (await res.json()).text;
+        if (!text) { await outbox.remove(item.id); dropPending(item.id); toast('Eine Sprachaufnahme war leer und wurde verworfen.'); continue; }
+      }
+      const convKey = item.convId || 'neu';
+      let convId = item.convId || createdFor.get(convKey) || null;
+      let reached = false;
+      await streamChat({ text, conversationId: convId, requestId: 'q' + item.id, onEvent: (ev, data) => {
+        if (ev === 'meta') { reached = true; convId = data.conversation_id; if (!item.convId) createdFor.set(convKey, convId); }
+      } }).catch((e) => { if (!reached) throw e; }); // nach Ankunft beim Server arbeitet er auch ohne uns weiter
+      await outbox.remove(item.id);
+      toast(`✅ Gesendet: „${text.slice(0, 40)}${text.length > 40 ? '…' : ''}“`);
+      // Gerade offenes Gespräch neu laden (auch wenn es offline neu begonnen wurde)
+      const viewing = $('#messages') && ((state.convId || null) === (item.convId || null) || (!item.convId && state.convId === convId));
+      if (viewing) {
+        if (!state.convId) state.convId = convId;
+        await reloadConversation();
+      }
+    }
+  } catch (e) {
+    if (e instanceof AuthError) renderLogin();
+    else if (!isNetworkError(e)) toast(e.message, 5000);
+  } finally { flushing = false; }
+}
+function dropPending(id) { const i = state.messages.findIndex((m) => m.outboxId === id); if (i >= 0) { state.messages.splice(i, 1); renderMessages(); } }
+
+async function reloadConversation() {
+  if (!state.convId) return;
+  const conv = await api(`/api/conversations/${state.convId}`);
+  state.convTitle = conv.title;
+  state.messages = conv.messages.map((m) => ({ role: m.role, content: m.content }));
+  await addPendingBubbles();
+  if ($('#messages')) { renderMessages(); const h = document.querySelector('.chat-head .grow'); if (h) h.textContent = conv.title; }
+  return conv;
+}
+
+let resuming = false;
+async function resumeIfNeeded() {
+  if (resuming || !state.resumeConv || !navigator.onLine || document.hidden) return;
+  resuming = true;
+  try {
+    for (let i = 0; i < 60; i++) { // max. ~2 Minuten warten
+      const conv = await api(`/api/conversations/${state.resumeConv}`);
+      if (!conv.running) {
+        if (state.convId === conv.id && !state.streaming) { await reloadConversation(); toast('Vio ist fertig ✅'); }
+        state.resumeConv = null;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  } catch {} finally { resuming = false; }
+}
+
+function updateOnlineUi() {
+  const bar = $('#offline-bar'); if (bar) bar.hidden = navigator.onLine;
+  if (navigator.onLine) { flushOutbox(); resumeIfNeeded(); }
+}
+window.addEventListener('online', updateOnlineUi);
+window.addEventListener('offline', updateOnlineUi);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { flushOutbox(); resumeIfNeeded(); } });
+
+function renderOffline(name) {
+  $('#nav').hidden = false;
+  if (name === 'chat' || name === '') { location.hash = '#/chat'; return renderChat(); }
+  view().innerHTML = `<div class="card placeholder"><div class="ph-icon">📴</div><p>Gerade kein Netz. Du kannst Vio trotzdem schreiben oder eine Sprachnachricht aufnehmen – sie wird gesendet, sobald du wieder online bist.</p><a class="btn primary" href="#/chat">Zum Chat</a></div>`;
 }
 
 function insertEvent(reply, data) {
@@ -767,6 +915,8 @@ async function renderSettings() {
     <div class="settings-group">
       <div class="field inline"><div><label for="tgrem">Erinnerungen per Telegram</label><div class="hint">Aufgaben mit Uhrzeit kommen pünktlich als Telegram-Nachricht.</div></div>
         <label class="switch"><input type="checkbox" id="tgrem" ${s.telegram_reminders ? 'checked' : ''}><span></span></label></div>
+      <div class="field inline"><div><label for="bgn">Antwort per Telegram, wenn ich weg bin</label><div class="hint">Verlässt du die App, bevor Vio fertig ist, schickt er dir die Antwort per Telegram.</div></div>
+        <label class="switch"><input type="checkbox" id="bgn" ${s.notify_background ? 'checked' : ''}><span></span></label></div>
       <div class="field"><label for="brief">Tagesübersicht am Morgen</label>
         <select class="input" id="brief">${['', '06:00', '06:30', '07:00', '07:30', '08:00', '08:30', '09:00'].map((t) => `<option value="${t}" ${s.morning_briefing === t ? 'selected' : ''}>${t ? t + ' Uhr' : 'Aus'}</option>`).join('')}</select>
         <div class="hint">Termine und Aufgaben des Tages per Telegram.</div></div>
@@ -785,7 +935,7 @@ async function renderSettings() {
       <div class="field"><label>Datensicherung</label><div class="hint">${backup ? '✓ Automatische Sicherung in Supabase ist aktiv.' : 'Aus – Daten liegen nur auf dem Server-Speicher.'}</div></div>
     </div>`;
 
-  const save = async (patch) => { state.settings = (await api('/api/settings', { method: 'PUT', body: patch })).settings; };
+  const save = async (patch) => { state.settings = (await api('/api/settings', { method: 'PUT', body: patch })).settings; cacheSettings(state.settings); };
   $('#name').onchange = (e) => save({ user_name: e.target.value.trim() || 'du' }).then(() => toast('Gespeichert'));
   document.querySelectorAll('[data-seg]').forEach((g) => g.querySelectorAll('button').forEach((b) => (b.onclick = async () => {
     g.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
@@ -797,6 +947,7 @@ async function renderSettings() {
   $('#gvoice')?.addEventListener('change', (e) => save({ gemini_voice: e.target.value }));
   $('#brief')?.addEventListener('change', (e) => save({ morning_briefing: e.target.value }).then(() => toast(e.target.value ? `Tagesübersicht um ${e.target.value}` : 'Tagesübersicht aus')));
   $('#tgrem')?.addEventListener('change', (e) => save({ telegram_reminders: e.target.checked }));
+  $('#bgn')?.addEventListener('change', (e) => save({ notify_background: e.target.checked }));
   $('#rate').oninput = (e) => ($('#rate-v').textContent = Number(e.target.value).toFixed(2));
   $('#rate').onchange = (e) => save({ speech_rate: Number(e.target.value) });
   $('#pitch').oninput = (e) => ($('#pitch-v').textContent = Number(e.target.value).toFixed(2));
@@ -842,11 +993,15 @@ async function boot() {
   try {
     const me = await api('/api/settings');
     state.settings = me.settings;
+    cacheSettings(me.settings);
   } catch (e) {
     if (e instanceof AuthError) return renderLogin();
+    const cached = cachedSettings();
+    if (isNetworkError(e) && cached) { state.settings = cached; $('#nav').hidden = false; return renderOffline(location.hash.replace(/^#\/?/, '').split('/')[0]); }
     view().innerHTML = `<div class="empty">Server nicht erreichbar: ${esc(e.message)}</div>`;
     return;
   }
+  setTimeout(flushOutbox, 1500);
   $('#nav').hidden = false;
   await route();
   // Shortcut „Mit Vio sprechen“ vom Startbildschirm

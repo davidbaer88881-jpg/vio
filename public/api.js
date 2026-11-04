@@ -15,12 +15,12 @@ export async function api(path, { method = 'GET', body } = {}) {
 }
 
 /** Streamt eine Chat-Antwort (Server-Sent Events über fetch). */
-export async function streamChat({ text, conversationId, signal, onEvent }) {
+export async function streamChat({ text, conversationId, signal, onEvent, requestId }) {
   const res = await fetch('/api/chat', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'X-Vio': '1', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, conversation_id: conversationId || null }),
+    body: JSON.stringify({ text, conversation_id: conversationId || null, request_id: requestId }),
     signal,
   });
   if (res.status === 401) throw new AuthError();
@@ -41,3 +41,6 @@ export async function streamChat({ text, conversationId, signal, onEvent }) {
     }
   }
 }
+
+/** true, wenn ein Fehler daher kommt, dass kein Netz da ist (nicht vom Server). */
+export const isNetworkError = (e) => e instanceof TypeError || /failed to fetch|network|load failed/i.test(String(e?.message));

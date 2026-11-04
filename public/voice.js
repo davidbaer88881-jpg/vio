@@ -35,7 +35,7 @@ export function listen({ onInterim, onFinal, onEnd, onError }) {
       'language-not-supported': 'Deutsch ist für die Spracherkennung nicht verfügbar. Installiere Deutsch in „Speech Services by Google“.',
     };
     const msg = e.error in map ? map[e.error] : `Spracherkennung: ${e.error}`;
-    if (msg) onError?.(msg);
+    if (msg) onError?.(msg, e.error);
   };
   rec.onend = () => {
     rec = null;
@@ -95,39 +95,49 @@ function finish() {
   }
 }
 
-/** Natürliche Stimme (Gemini über den Server). Fällt bei Problemen auf die Handy-Stimme zurück. */
+/** Natürliche Stimme (Gemini über den Server). Fällt bei Problemen auf die Handy-Stimme zurück.
+ *  Mehrere Teile werden parallel vorgeladen, aber streng nacheinander abgespielt. */
 let generation = 0;
-export async function speakNatural(text, settings = {}) {
+let playChain = Promise.resolve();
+async function fetchTts(text, settings, signal) {
+  const res = await fetch('/api/tts', {
+    method: 'POST', signal, credentials: 'same-origin',
+    headers: { 'X-Vio': '1', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text.slice(0, 1500), voice: settings.gemini_voice }),
+  });
+  if (!res.ok) throw new Error('tts ' + res.status);
+  return res.blob();
+}
+function playBlob(blob, settings) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.playbackRate = settings.speech_rate || 1;
+    currentAudio = audio;
+    const done = (ok) => { URL.revokeObjectURL(url); if (currentAudio === audio) currentAudio = null; resolve(ok); };
+    audio.onended = () => done(true);
+    audio.onerror = () => done(false);
+    audio.onpause = () => { if (!audio.ended) done(true); };
+    audio.play().catch(() => done(false));
+  });
+}
+export function speakNatural(text, settings = {}) {
   const clean = cleanForSpeech(text);
-  if (!clean) return;
+  if (!clean) return Promise.resolve();
   const myGen = generation;
+  if (!ttsAbort || ttsAbort.signal.aborted) ttsAbort = new AbortController();
+  const audioPromise = fetchTts(clean, settings, ttsAbort.signal).catch(() => null); // sofort vorladen
   begin();
-  let ok = false;
-  try {
-    ttsAbort = new AbortController();
-    const res = await fetch('/api/tts', {
-      method: 'POST', signal: ttsAbort.signal, credentials: 'same-origin',
-      headers: { 'X-Vio': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: clean.slice(0, 1500), voice: settings.gemini_voice }),
-    });
-    if (res.ok && myGen === generation) {
-      const url = URL.createObjectURL(await res.blob());
-      const audio = new Audio(url);
-      audio.playbackRate = settings.speech_rate || 1;
-      currentAudio = audio;
-      ok = await new Promise((resolve) => {
-        audio.onended = () => resolve(true);
-        audio.onerror = () => resolve(false);
-        audio.onpause = () => { if (!audio.ended) resolve(true); }; // vom Nutzer gestoppt
-        audio.play().catch(() => resolve(false));
-      });
-      URL.revokeObjectURL(url);
-      currentAudio = null;
-    }
-  } catch { /* Netzwerk/Abbruch */ }
-  if (myGen !== generation) return; // inzwischen gestoppt
-  finish();
-  if (!ok) speak(text, settings); // Handy-Stimme als Ersatz
+  playChain = playChain.then(async () => {
+    if (myGen !== generation) return;
+    const blob = await audioPromise;
+    if (myGen !== generation) return;
+    const ok = blob ? await playBlob(blob, settings) : false;
+    if (myGen !== generation) return;
+    finish();
+    if (!ok) speak(text, settings); // Handy-Stimme als Ersatz
+  });
+  return playChain;
 }
 
 /** Spricht mit der eingestellten Stimme. */
@@ -152,6 +162,7 @@ export function speak(text, settings = {}) {
 export function whenSpeechDone(cb) { if (queue === 0) cb(); else onIdle = cb; }
 export function stopSpeaking() {
   generation++;
+  playChain = Promise.resolve();
   onIdle = null; queue = 0;
   try { ttsAbort?.abort(); } catch {}
   if (currentAudio) { try { currentAudio.pause(); } catch {} currentAudio = null; }
@@ -165,7 +176,13 @@ export class SentenceSpeaker {
   constructor(settings) { this.settings = settings; this.buf = ''; }
   push(delta) {
     this.buf += delta;
-    if (this.settings.voice_engine === 'gemini') return; // natürliche Stimme: ganze Antwort auf einmal (spart Anfragen)
+    if (this.settings.voice_engine === 'gemini') {
+      // Natürliche Stimme: ersten Satz sofort sprechen (schnellere Reaktion), den Rest am Stück (spart Anfragen)
+      if (this.firstDone) return;
+      const i = this.buf.search(/[.!?…]\s/);
+      if (i !== -1 && i > 8) { this.firstDone = true; say(this.buf.slice(0, i + 1), this.settings); this.buf = this.buf.slice(i + 2); }
+      return;
+    }
     let i;
     // Satzende = . ! ? … gefolgt von Leerzeichen/Zeilenumbruch (nicht "z.B." mitten im Wort)
     while ((i = this.buf.search(/[.!?…]\s/)) !== -1) {
@@ -175,4 +192,53 @@ export class SentenceSpeaker {
     }
   }
   flush() { if (this.buf.trim()) say(this.buf, this.settings); this.buf = ''; }
+}
+
+// ---------- Sprachaufnahme ohne Netz (wird später hochgeladen und in Text umgewandelt) ----------
+export const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+let recorder = null;
+
+/** Startet eine Aufnahme. Gibt { stop(): Promise<Blob WAV> , cancel() } zurück. */
+export async function startRecording() {
+  stopSpeaking();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  const chunks = [];
+  const rec = new MediaRecorder(stream);
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.start(250);
+  recorder = rec;
+  const started = Date.now();
+  const autoStop = setTimeout(() => rec.state === 'recording' && rec.stop(), 3 * 60e3); // max. 3 Minuten
+  const finished = new Promise((resolve) => (rec.onstop = resolve));
+  const cleanup = () => { clearTimeout(autoStop); stream.getTracks().forEach((t) => t.stop()); recorder = null; };
+  return {
+    started,
+    async stop() {
+      if (rec.state === 'recording') rec.stop();
+      await finished; cleanup();
+      return toWav(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+    },
+    cancel() { try { rec.state === 'recording' && rec.stop(); } catch {} cleanup(); },
+  };
+}
+export const isRecording = () => !!recorder;
+
+/** Wandelt die Aufnahme (webm/opus) in eine kleine WAV-Datei (16 kHz, mono) um – die versteht Gemini sicher. */
+async function toWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  ctx.close?.();
+  const rate = 16000;
+  const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * rate), rate);
+  const src = offline.createBufferSource();
+  src.buffer = decoded; src.connect(offline.destination); src.start();
+  const pcm = (await offline.startRendering()).getChannelData(0);
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Blob([buf], { type: 'audio/wav' });
 }

@@ -179,3 +179,10 @@ Dann **Save, rebuild, and deploy**. Diesmal dauert das Bauen etwas länger, weil
 - Sicherheitsgrenze: höchstens **20 Nachrichten pro Stunde**. Massennachrichten sind nicht möglich, weil Telegram Konten bei Spam sperrt.
 - Gibt es mehrere Treffer (z. B. zwei „Lisa“), fragt Vio nach, statt zu raten.
 - Die Sitzung liegt verschlüsselt in der Datenbank. Mit „Abmelden“ in Vio wird sie gelöscht und bei Telegram beendet.
+
+## Ab Version 0.5: schneller, im Hintergrund, ohne Netz
+
+- **Schneller:** Gemini antwortet ohne langes Vorab-„Nachdenken“. Mit der natürlichen Stimme spricht Vio den ersten Satz, sobald er fertig ist. Wer lieber gründlichere Antworten will, setzt in Render `VIO_GEMINI_THINKING` auf `low` oder `medium`.
+- **App verlassen:** Vio arbeitet auf dem Server weiter und speichert die Antwort. Kommst du zurück, erscheint sie im Chat. Bist du dann noch weg, kommt sie per Telegram (abschaltbar unter Einstellungen → Erinnerungen).
+- **Kein Netz:** Getippte Nachrichten und Sprachaufnahmen (Mikro-Knopf) werden auf dem Handy gespeichert, auch wenn du die App schließt. Sobald wieder Netz da ist, schickt Vio sie automatisch ab.
+- **Größter Bremsklotz bleibt der Gratis-Server:** Nach 15 Minuten ohne Besuch schläft er, und die erste Antwort dauert dann bis zu einer Minute. Dagegen hilft der Weck-Dienst aus Abschnitt C (cron-job.org).

@@ -12,6 +12,7 @@ import * as google from './google.js';
 import * as telegram from './telegram.js';
 import { synthesize, GEMINI_VOICES } from './tts.js';
 import * as tguser from './tguser.js';
+import { transcribe } from './transcribe.js';
 import { startScheduler, buildBriefing, tick } from './scheduler.js';
 import { getConnections } from './connections.js';
 
@@ -78,6 +79,8 @@ async function serveStatic(req, res, pathname) {
 }
 
 // ---------- App ----------
+const runningTurns = new Map(); // request_id → { ac, convId }
+
 export function createApp(db) {
   const hasUser = () => !!db.prepare('SELECT 1 FROM users LIMIT 1').get();
 
@@ -158,19 +161,45 @@ export function createApp(db) {
       if (pathname === '/api/chat' && method === 'POST') {
         const body = await readJson(req);
         res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        // Wichtig: Verlässt du die App (Verbindung reißt ab), arbeitet Vio trotzdem weiter und speichert die Antwort.
+        // Abgebrochen wird nur, wenn du ausdrücklich auf Stopp tippst (/api/chat/stop).
         const ac = new AbortController();
-        res.on('close', () => { if (!res.writableEnded) ac.abort(); });
-        const sse = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+        const rid = String(body.request_id || '').slice(0, 64) || Math.random().toString(36).slice(2);
+        runningTurns.set(rid, { ac, convId: null });
+        let clientGone = false;
+        res.on('close', () => { if (!res.writableEnded) clientGone = true; });
+        let answer = '';
+        let convId = null;
+        const sse = (event, data) => {
+          if (event === 'meta') { convId = data.conversation_id; runningTurns.get(rid).convId = convId; }
+          if (event === 'delta') answer += data.text;
+          if (!clientGone && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+        const keepAlive = setInterval(() => { if (!clientGone && !res.writableEnded) res.write(': ping\n\n'); }, 15000);
         try {
           await runChatTurn(db, { conversationId: body.conversation_id, text: body.text }, sse, ac.signal);
+          // Antwort fertig, aber du warst nicht mehr in der App → per Telegram nachreichen
+          if (clientGone && answer.trim() && getSettings(db).notify_background && telegram.telegramStatus(db).linked) {
+            await telegram.sendToMe(db, `💬 Vio: ${answer.trim()}`.slice(0, 4000)).catch((e) => console.error(e.message));
+          }
         } catch (e) {
           if (e.name !== 'AbortError') {
             console.error(e);
             const msg = e.message === 'fetch failed' ? 'Der KI-Dienst ist gerade nicht erreichbar. Versuch es gleich nochmal.' : (e.message || 'Fehler');
             sse('error', { message: msg });
+            if (convId) db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(convId, 'assistant', '⚠️ ' + msg);
           }
+        } finally {
+          clearInterval(keepAlive);
+          runningTurns.delete(rid);
+          scheduleBackup(db);
         }
         return res.end();
+      }
+      if (pathname === '/api/chat/stop' && method === 'POST') {
+        const { request_id } = await readJson(req);
+        runningTurns.get(String(request_id))?.ac.abort();
+        return json(res, 200, { ok: true });
       }
 
       // --- Gespräche ---
@@ -182,6 +211,7 @@ export function createApp(db) {
         const conv = db.prepare('SELECT id, title FROM conversations WHERE id = ?').get(Number(m[1]));
         if (!conv) return json(res, 404, { error: 'Nicht gefunden' });
         conv.messages = db.prepare('SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id').all(conv.id);
+        conv.running = [...runningTurns.values()].some((t) => t.convId === conv.id);
         return json(res, 200, conv);
       }
       if (m && method === 'DELETE') {
@@ -218,6 +248,7 @@ export function createApp(db) {
           if (k === 'voice_engine' && !['gemini', 'device'].includes(v)) continue;
           if (k === 'morning_briefing' && v !== '' && !/^\d{2}:\d{2}$/.test(v)) continue;
           if (k === 'last_briefing') continue;
+          if (k === 'notify_background' && typeof v !== 'boolean') continue;
           if (k === 'ai_provider' && !['auto', 'gemini', 'claude'].includes(v)) continue;
           if (k === 'tts_mode' && !['voice', 'always', 'never'].includes(v)) continue;
           if ((k === 'speech_rate' || k === 'speech_pitch') && !(v >= 0.5 && v <= 2)) continue;
@@ -336,6 +367,16 @@ export function createApp(db) {
         const text = await buildBriefing(db);
         if (telegram.telegramStatus(db).linked) await telegram.sendToMe(db, text);
         return json(res, 200, { text });
+      }
+
+      // --- Offline aufgenommene Sprachnachricht → Text ---
+      if (pathname === '/api/transcribe' && method === 'POST') {
+        const type = String(req.headers['content-type'] || 'audio/wav').split(';')[0];
+        if (!/^audio\//.test(type)) return json(res, 415, { error: 'Nur Audio erlaubt.' });
+        const chunks = []; let size = 0;
+        for await (const c of req) { size += c.length; if (size > 12 * 1024 * 1024) return json(res, 413, { error: 'Aufnahme zu lang (max. ca. 3 Minuten).' }); chunks.push(c); }
+        try { return json(res, 200, { text: await transcribe(Buffer.concat(chunks), type) }); }
+        catch (e) { return json(res, e.status === 429 ? 429 : 502, { error: e.status === 429 ? 'Limit erreicht – gleich nochmal.' : 'Spracherkennung gerade nicht verfügbar.' }); }
       }
 
       // --- Stimme ---

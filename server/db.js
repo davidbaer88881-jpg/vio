@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS = {
   morning_briefing: '07:30', // Uhrzeit der Tagesübersicht per Telegram, '' = aus
   telegram_reminders: true,
   last_briefing: '',
+  notify_background: true, // Antwort per Telegram, wenn du die App vorher verlassen hast
 };
 
 // Geschützte Einstellungen: nur mit Passwort änderbar, niemals per Chat.

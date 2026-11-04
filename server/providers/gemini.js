@@ -32,18 +32,29 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
  * erst kurz warten und neu versuchen, dann auf ein Ausweich-Modell wechseln.
  * Das passiert, bevor Text gestreamt wird – der Nutzer sieht keine halben Antworten.
  */
-async function openStream(body, signal) {
+// Schnelle Antworten: Gemini soll nur minimal „nachdenken“. Je nach Modellgeneration heißt die
+// Einstellung anders; lehnt ein Modell sie ab, merkt sich Vio das und lässt sie dort weg.
+const thinkingUnsupported = new Set();
+export function thinkingFor(model) {
+  if (thinkingUnsupported.has(model) || config.geminiThinking === 'default') return null;
+  return /(^|-)2\.5/.test(model) ? { thinkingBudget: 0 } : { thinkingLevel: config.geminiThinking };
+}
+
+async function openStream(bodyObj, signal) {
   const models = [config.geminiModel, ...config.geminiFallbacks.filter((m) => m !== config.geminiModel)];
   let lastErr;
   for (const model of models) {
     for (let attempt = 0; attempt < 3; attempt++) {
+      const thinking = thinkingFor(model);
+      const gc = { ...bodyObj.generationConfig, ...(thinking ? { thinkingConfig: thinking } : {}) };
       const res = await fetch(`${config.geminiBase}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
         method: 'POST', signal,
         headers: { 'content-type': 'application/json', 'x-goog-api-key': config.geminiKey },
-        body,
+        body: JSON.stringify({ ...bodyObj, generationConfig: gc }),
       });
       if (res.ok) return res;
       lastErr = await toError(res, model);
+      if (res.status === 400 && thinking && /think/i.test(lastErr.raw || '')) { thinkingUnsupported.add(model); attempt--; continue; }
       if (res.status === 404) break;                 // Modell gibt's nicht → nächstes Modell
       if (!RETRYABLE.has(res.status)) throw lastErr; // z. B. falscher Schlüssel → sofort melden
       if (res.status === 429) break;                 // Limit gilt pro Modell → gleich nächstes Modell
@@ -68,16 +79,17 @@ async function toError(res, model) {
   }[res.status];
   const err = new Error(friendly || `Gemini-Fehler ${res.status}: ${String(msg).slice(0, 200)}`);
   err.status = res.status;
+  err.raw = String(msg);
   return err;
 }
 
 async function* streamGemini({ system, contents, tools, signal }) {
-  const res = await openStream(JSON.stringify({
+  const res = await openStream({
     systemInstruction: { parts: [{ text: system }] },
     contents,
     tools: toGeminiTools(tools),
     generationConfig: { maxOutputTokens: config.maxTokens * 2 },
-  }), signal);
+  }, signal);
 
   const parts = [];
   const decoder = new TextDecoder();

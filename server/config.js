@@ -24,6 +24,11 @@ export const config = {
     .split(',').map((s) => s.trim()).filter(Boolean),
   // Wie viel Gemini vor der Antwort nachdenkt: minimal (schnell) | low | medium | high | default
   geminiThinking: env('VIO_GEMINI_THINKING') || 'minimal',
+  // Optional: ElevenLabs für die menschlichste Stimme (kostenpflichtig, elevenlabs.io)
+  elevenKey: env('ELEVENLABS_API_KEY'),
+  elevenVoiceId: env('ELEVENLABS_VOICE_ID') || 'pNInz6obpgDQGcFmaJgB', // „Adam“ – männlich, spricht Deutsch über das mehrsprachige Modell
+  elevenModel: env('ELEVENLABS_MODEL') || 'eleven_flash_v2_5',
+  elevenBase: (env('ELEVENLABS_BASE_URL') || 'https://api.elevenlabs.io').replace(/\/$/, ''),
   retryDelayMs: Number(process.env.VIO_RETRY_DELAY_MS ?? 1500),
 
   // KI-Gehirn 2: Claude (kostenpflichtig, Guthaben auf console.anthropic.com)

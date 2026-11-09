@@ -34,6 +34,7 @@ const ICON = {
   bell: '<svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21h4"/></svg>',
   brain: '<svg viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/></svg>',
   gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1"/></svg>',
+  apps: '<svg viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>',
   shield: '<svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg>',
 };
 
@@ -77,7 +78,7 @@ function greeting(name) {
   const g = h < 5 ? 'Noch wach' : h < 11 ? 'Guten Morgen' : h < 14 ? 'Mahlzeit' : h < 18 ? 'Hey' : h < 22 ? 'Guten Abend' : 'Spät dran';
   return `${g}, ${name}`;
 }
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 const QUIPS = [
   'Was steht an? Ich bin ganz Ohr – im übertragenen Sinne.',
   'Sag einfach, was du brauchst. Ich kümmer mich.',
@@ -102,7 +103,7 @@ async function route() {
   const fn = routes[name] || renderHome;
   document.querySelectorAll('[data-nav]').forEach((a) => {
     const n = a.dataset.nav;
-    a.classList.toggle('active', n === (name || 'home') || (n === 'more' && ['calendar', 'phone', 'reminders', 'memory', 'settings'].includes(name)) || (n === 'chat' && name === 'history'));
+    a.classList.toggle('active', n === (name || 'home') || (n === 'more' && ['calendar', 'phone', 'reminders', 'memory', 'settings', 'apps'].includes(name)) || (n === 'chat' && name === 'history'));
   });
   if (name !== 'chat') { voice.stopListening(); }
   try {
@@ -146,61 +147,118 @@ function renderLogin() {
 // ============================================================================
 //  Startseite
 // ============================================================================
+// ---------- Schnellspeicher: Seiten sofort mit letztem Stand zeigen, dann im Hintergrund auffrischen ----------
+function readCache(path) { try { return JSON.parse(localStorage.getItem('swr:' + path) || 'null'); } catch { return null; } }
+function writeCache(path, data) { try { localStorage.setItem('swr:' + path, JSON.stringify(data)); } catch {} }
+function clearCaches() { try { Object.keys(localStorage).filter((k) => k.startsWith('swr:') || k === 'vio-settings').forEach((k) => localStorage.removeItem(k)); } catch {} }
+async function swr(path, render) {
+  const token = (state.renderToken = Symbol(path));
+  const cached = readCache(path);
+  if (cached) render(cached);
+  let fresh;
+  try { fresh = await api(path); } catch (e) { if (cached && (isNetworkError(e))) return; throw e; }
+  writeCache(path, fresh);
+  if (state.renderToken !== token) return; // Nutzer ist schon woanders
+  if (!cached || JSON.stringify(cached) !== JSON.stringify(fresh)) render(fresh);
+}
+
+// Tageszeit-Farbe der Aura
+function setDaypart() {
+  const h = new Date().getHours();
+  document.documentElement.dataset.daypart = h >= 5 && h < 11 ? 'morning' : h >= 11 && h < 17 ? 'day' : h >= 17 && h < 22 ? 'evening' : 'night';
+}
+setDaypart(); setInterval(setDaypart, 10 * 60e3);
+
+const todayKey = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+const hhmm = (iso) => new Date(iso).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' });
+
+/** Termine + Aufgaben zu einer Zeitleiste für heute zusammenführen. */
+function buildToday(events, tasks) {
+  const today = todayKey();
+  const items = [];
+  for (const e of events || []) {
+    if (dayKey(e.start, e.all_day) !== today) continue;
+    items.push({ kind: 'event', sort: e.all_day ? '00:00' : hhmm(e.start), time: e.all_day ? 'Ganztags' : hhmm(e.start), title: e.title, meta: [e.all_day ? '' : `bis ${hhmm(e.end)}`, e.location].filter(Boolean).join(', '), id: e.id, start: e.start, end: e.end, all_day: e.all_day });
+  }
+  for (const t of tasks || []) {
+    if (!t.due_at || t.due_at.slice(0, 10) > today) continue;
+    const overdue = t.due_at.slice(0, 10) < today;
+    items.push({ kind: 'task', sort: overdue ? '00:00' : t.due_at.length > 10 ? t.due_at.slice(11) : '23:59', time: overdue ? 'Offen' : t.due_at.length > 10 ? t.due_at.slice(11) : 'Heute', title: t.title, meta: [overdue ? `fällig seit ${fmtDue(t.due_at)}` : '', t.repeat ? `🔁 ${REPEAT_LABEL[t.repeat] || ''}` : ''].filter(Boolean).join(' · '), task: t });
+  }
+  items.sort((a, b) => a.sort.localeCompare(b.sort));
+  // Überschneidungen markieren
+  const timed = items.filter((i) => i.kind === 'event' && !i.all_day);
+  for (const a of timed) for (const b of timed) if (a !== b && Date.parse(a.start) < Date.parse(b.end) && Date.parse(b.start) < Date.parse(a.end)) a.conflict = true;
+  return items;
+}
+
 async function renderHome() {
-  const data = await api('/api/home');
-  state.settings = data.settings;
-  const name = data.settings.user_name || 'du';
-  const quip = QUIPS[Math.floor(Math.random() * QUIPS.length)];
+  await swr('/api/home', paintHome);
+}
+
+function paintHome(data) {
+  state.settings = data.settings; cacheSettings(data.settings);
+  const name = data.settings.user_name && data.settings.user_name !== 'du' ? data.settings.user_name : '';
+  const keep = $('#ask input')?.value || '';
+  if (!state.quip) state.quip = QUIPS[Math.floor(Math.random() * QUIPS.length)];
   const brain = data.connections.find((c) => c.id === 'ai');
+  const today = buildToday(data.events, data.tasks);
+  const undated = (data.tasks || []).filter((t) => !t.due_at);
+  const later = (data.events || []).filter((e) => dayKey(e.start, e.all_day) > todayKey()).slice(0, 3);
+  const dateLine = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
 
   view().innerHTML = `
-    <section class="hero">
-      <div class="greet">${esc(greeting(name))} 👋</div>
-      <h1>Ich bin Vio.</h1>
-      <p class="sub">${esc(quip)}</p>
-      <div class="orb-wrap"><button class="orb" id="orb" aria-label="Mit Vio sprechen">${ICON.mic}</button></div>
-      <form class="ask" id="ask">
-        <input class="input" name="q" placeholder="Oder schreib mir …" autocomplete="off" enterkeyhint="send">
-        <button class="icon-btn send" aria-label="Senden">${ICON.send}</button>
-      </form>
-      ${brain.status !== 'connected' ? `<div class="empty warn-box">Kein KI-Schlüssel auf dem Server – Vio kann noch nicht antworten. Setze GEMINI_API_KEY (kostenlos).</div>` : ''}
-    </section>
+    <div class="home-top"><span>${esc(dateLine)}</span><a class="avatar-btn" href="#/settings" aria-label="Einstellungen">${esc((name || 'V').slice(0, 1))}</a></div>
+    <div class="greeting">${esc(greeting('').replace(/,\s*$/, ''))}${name ? `,<br><span class="name">${esc(name)}.</span>` : '.'}</div>
+    <p class="quip">${esc(state.quip)}</p>
 
-    ${state.installPrompt ? `<div class="card install-banner"><div class="avatar">V</div><div class="grow">Vio als App auf dem Startbildschirm installieren?</div><button class="btn primary small" id="install">Installieren</button></div>` : ''}
-
-    ${data.pending_facts.length ? `
-      <h2>Soll ich mir das merken?</h2>
-      <div class="list">${data.pending_facts.map(factRow).join('')}</div>` : ''}
-
-    <h2>Nächste Termine</h2>
-    ${data.events === null
-      ? `<a class="empty block" href="#/apps">${ICON.cal.replace('<svg', '<svg class="ico-inline"')}Google Kalender ist noch nicht verbunden – jetzt verbinden.</a>`
-      : `<div class="list">${data.events.length ? data.events.map(eventRow).join('') : '<div class="empty">Keine Termine in den nächsten 7 Tagen.</div>'}</div>`}
-
-    <h2>Offene Aufgaben</h2>
-    <div class="list">
-      ${data.tasks.length ? data.tasks.map(taskRow).join('') : '<div class="empty">Nichts offen. Sag z. B. „Erinner mich, Milch zu kaufen“.</div>'}
+    <div class="aura-stage">
+      <button class="aura" id="orb" aria-label="Gespräch mit Vio starten">${ICON.mic}</button>
+      <div class="aura-label">Tippen und lossprechen</div>
     </div>
 
-    <h2>Letzte Unterhaltungen</h2>
-    <div class="list">
-      ${data.conversations.length ? data.conversations.map((c) => `
-        <a class="row" href="#/chat/${c.id}"><div class="grow"><div class="title">${esc(c.title)}</div><div class="meta">${relTime(c.updated_at)}</div></div></a>`).join('')
-        : '<div class="empty">Noch keine Gespräche.</div>'}
+    <form class="ask" id="ask">
+      <input class="input" name="q" placeholder="Oder schreib Vio etwas …" autocomplete="off" enterkeyhint="send" value="${esc(keep)}">
+      <button class="icon-btn send" aria-label="Senden">${ICON.send}</button>
+    </form>
+    <div class="quick">
+      ${[['📅', 'Termin eintragen', 'Trag mir einen Termin ein: '], ['⏰', 'Erinnerung', 'Erinner mich '], ['✈️', 'Nachricht', 'Schreib '], ['☀️', 'Mein Tag', 'Was steht heute an?'], ['📞', 'Anruf', 'Bereite einen Anruf vor: ']]
+        .map(([i, l, p]) => `<button class="chip" data-prefill="${esc(p)}">${i} ${l}</button>`).join('')}
     </div>
+    ${brain.status !== 'connected' ? `<div class="empty warn-box">Auf dem Server fehlt der KI-Schlüssel (GEMINI_API_KEY). Bis er eingetragen ist, kann Vio nicht antworten.</div>` : ''}
+    ${state.installPrompt ? `<div class="card install-banner"><div class="avatar">V</div><div class="grow">Vio auf den Startbildschirm legen?</div><button class="btn primary small" id="install">Installieren</button></div>` : ''}
 
-    <h2>Meine Apps</h2>
-    <div class="status-chips">${data.connections.map(connChip).join('')}</div>
+    ${data.pending_facts.length ? `<h2>Soll ich mir das merken?</h2><div class="list">${data.pending_facts.map(factRow).join('')}</div>` : ''}
+
+    <h2>Heute</h2>
+    ${today.length ? `<div class="timeline">${today.map((i) => `
+      <div class="tl-item ${i.kind}${i.conflict ? ' conflict' : ''}">
+        <div class="tl-time">${esc(i.time)}</div><div class="tl-mark"></div>
+        <div class="tl-body"><div class="title">${esc(i.title)}</div>${i.meta || i.conflict ? `<div class="meta">${esc(i.meta)}${i.conflict ? `${i.meta ? ' · ' : ''}überschneidet sich` : ''}</div>` : ''}</div>
+        ${i.kind === 'task' ? `<button class="check" data-toggle="${i.task.id}" data-done="0" aria-label="Erledigt"></button>` : '<span></span>'}
+      </div>`).join('')}</div>`
+      : `<div class="empty">${data.events === null ? 'Heute steht nichts an. Verbinde den Google Kalender unter <a href="#/apps"><u>Apps</u></a>, dann erscheinen hier auch deine Termine.' : 'Heute ist nichts geplant. Genieß es – oder sag Vio, was ansteht.'}</div>`}
+
+    ${later.length ? `<h2>Demnächst</h2><div class="list">${later.map(eventRow).join('')}</div>` : ''}
+    ${undated.length ? `<h2>Irgendwann erledigen</h2><div class="list">${undated.map(taskRow).join('')}</div>` : ''}
+
+    ${data.conversations.length ? `<h2>Zuletzt gesprochen</h2><div class="list">${data.conversations.slice(0, 3).map((c) => `
+      <a class="row" href="#/chat/${c.id}"><div class="grow"><div class="title">${esc(c.title)}</div><div class="meta">${relTime(c.updated_at)}</div></div></a>`).join('')}</div>` : ''}
   `;
 
-  // Mikrofon SOFORT im Tipp starten (Android erlaubt das nur direkt bei der Berührung), dann zum Chat wechseln
-  $('#orb').onclick = () => openConversation(); // Gesprächsmodus: Begrüßung, Zuhören, Antworten – im Wechsel
+  $('#orb').onclick = () => openConversation();
   $('#ask').onsubmit = (e) => {
     e.preventDefault();
     const q = e.target.q.value.trim(); if (!q) return;
     newConversation(); location.hash = '#/chat';
     setTimeout(() => sendMessage(q, false), 60);
   };
+  document.querySelectorAll('[data-prefill]').forEach((b) => (b.onclick = () => {
+    const p = b.dataset.prefill;
+    newConversation(); location.hash = '#/chat';
+    if (!/ $/.test(p)) { setTimeout(() => sendMessage(p, false), 60); return; }
+    setTimeout(() => { const i = $('#input'); if (i) { i.value = p; i.focus(); i.setSelectionRange(p.length, p.length); } }, 90);
+  }));
   $('#install')?.addEventListener('click', doInstall);
   bindTaskRows(); bindFactRows();
 }
@@ -708,8 +766,8 @@ async function renderHistory() {
 // ============================================================================
 //  Aufgaben
 // ============================================================================
-async function renderTasks() {
-  const tasks = await api('/api/tasks');
+async function renderTasks() { await swr('/api/tasks', paintTasks); }
+function paintTasks(tasks) {
   const open = tasks.filter((t) => !t.done), done = tasks.filter((t) => t.done).slice(0, 15);
   view().innerHTML = `
     <h1>Aufgaben</h1>
@@ -736,8 +794,8 @@ function taskRowWithDelete(t) { return taskRow(t).replace(/<\/div>\s*$/, `<butto
 // ============================================================================
 //  Apps & Verbindungen
 // ============================================================================
-async function renderApps() {
-  const { connections, google, telegram, tguser } = await api('/api/connections');
+async function renderApps() { await swr('/api/connections', paintApps); }
+function paintApps({ connections, google, telegram, tguser }) {
   if (state.query?.get('google') === 'ok') toast('Google ist verbunden 🎉');
   if (state.query?.get('google_error')) toast('Google: ' + state.query.get('google_error'), 6000);
   const LABEL = { connected: 'Verbunden', available: 'Bereit zum Verbinden', needs_setup: 'Einrichtung nötig', limited: 'Vorbereiten', missing_key: 'Schlüssel fehlt', planned: 'Geplant' };
@@ -846,6 +904,7 @@ function renderMore() {
     ['calendar', ICON.cal, 'Kalender', 'Tag & Woche'],
     ['reminders', ICON.bell, 'Erinnerungen', 'Fällige Aufgaben'],
     ['phone', ICON.phone, 'Telefon', 'Anrufe vorbereiten'],
+    ['apps', ICON.apps || ICON.gear, 'Apps', 'Telegram, Google & Co.'],
     ['memory', ICON.brain, 'Gedächtnis', 'Was Vio über dich weiß'],
     ['settings', ICON.gear, 'Einstellungen', 'Stimme, Budget, Sicherheit'],
     ['history', ICON.history, 'Verlauf', 'Alte Gespräche'],
@@ -854,7 +913,7 @@ function renderMore() {
     <div class="tiles">${tiles.map(([r, i, t, m]) => `<a class="tile" href="#/${r}">${i}<div><div>${t}</div><div class="meta">${m}</div></div></a>`).join('')}</div>
     <p class="sub center mt24"><button class="btn small" id="logout">Abmelden</button></p>
     <p class="sub center">Vio Version ${VERSION}</p>`;
-  $('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); renderLogin(); };
+  $('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); clearCaches(); renderLogin(); };
 }
 
 const REPEAT_LABEL = { daily: 'täglich', weekdays: 'werktags', weekly: 'wöchentlich', monthly: 'monatlich', yearly: 'jährlich' };
@@ -972,7 +1031,8 @@ async function renderSettings() {
   const { settings: s, protected: p, providers, active_provider: activeP, backup } = await api('/api/settings');
   state.settings = s;
   const voices = voice.germanVoices();
-  const gvoices = (await api('/api/voices').catch(() => ({ gemini: [] }))).gemini;
+  const vinfo = await api('/api/voices').catch(() => ({ gemini: [], provider: null }));
+  const gvoices = vinfo.gemini;
   const auto = voice.pickVoice('');
   const seg = (key, opts) => `<div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${s[key] === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 
@@ -998,9 +1058,9 @@ async function renderSettings() {
       <div class="field"><label>Antworten vorlesen</label>${seg('tts_mode', [['voice', 'Bei Sprache'], ['always', 'Immer'], ['never', 'Nie']])}</div>
       <div class="field inline"><div><label for="hf">Freisprechmodus</label><div class="hint">Nach Vios Antwort automatisch wieder zuhören.</div></div>
         <label class="switch"><input type="checkbox" id="hf" ${s.handsfree ? 'checked' : ''}><span></span></label></div>
-      <div class="field"><label>Stimme</label>${seg('voice_engine', [['gemini', 'Natürlich (Gemini)'], ['device', 'Handy-Stimme']])}
+      <div class="field"><label>Stimme</label>${seg('voice_engine', [['gemini', vinfo.provider === 'elevenlabs' ? 'Natürlich (ElevenLabs)' : 'Natürlich'], ['device', 'Handy-Stimme']])}
         <div class="hint">„Natürlich“ klingt deutlich besser, braucht aber 1–2 Sekunden länger. Ist das Gratis-Limit erreicht, springt automatisch die Handy-Stimme ein.</div></div>
-      <div class="field ${s.voice_engine === 'gemini' ? '' : 'hidden-field'}" id="gv-field"><label for="gvoice">Natürliche Stimme</label>
+      <div class="field ${s.voice_engine === 'gemini' && vinfo.provider !== 'elevenlabs' ? '' : 'hidden-field'}" id="gv-field"><label for="gvoice">Natürliche Stimme</label>
         <select class="input" id="gvoice">${(gvoices || []).map((v) => `<option value="${esc(v.id)}" ${v.id === s.gemini_voice ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
       <div class="field ${s.voice_engine === 'device' ? '' : 'hidden-field'}" id="dv-field"><label for="voice">Handy-Stimme</label>
         <select class="input" id="voice">
@@ -1114,5 +1174,6 @@ async function boot() {
   }
 }
 
+$('#nav-aura').onclick = () => openConversation();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();

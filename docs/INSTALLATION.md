@@ -186,3 +186,15 @@ Dann **Save, rebuild, and deploy**. Diesmal dauert das Bauen etwas länger, weil
 - **App verlassen:** Vio arbeitet auf dem Server weiter und speichert die Antwort. Kommst du zurück, erscheint sie im Chat. Bist du dann noch weg, kommt sie per Telegram (abschaltbar unter Einstellungen → Erinnerungen).
 - **Kein Netz:** Getippte Nachrichten und Sprachaufnahmen (Mikro-Knopf) werden auf dem Handy gespeichert, auch wenn du die App schließt. Sobald wieder Netz da ist, schickt Vio sie automatisch ab.
 - **Größter Bremsklotz bleibt der Gratis-Server:** Nach 15 Minuten ohne Besuch schläft er, und die erste Antwort dauert dann bis zu einer Minute. Dagegen hilft der Weck-Dienst aus Abschnitt C (cron-job.org).
+
+## Ab Version 0.7: neues Design und bessere Stimme
+
+- **Neues Design:** Vios „Aura“ ändert ihre Farbe mit der Tageszeit. Der Aura-Knopf in der Mitte der unteren Leiste startet von überall ein Gespräch. Die Startseite zeigt „Heute“ als Zeitleiste mit Terminen und Aufgaben.
+- **Schneller:** Jede Seite erscheint sofort mit dem letzten Stand und aktualisiert sich im Hintergrund. Termine auf der Startseite werden kurz zwischengespeichert.
+- **Stimme:** Gleiche Sätze, z. B. die Begrüßung, kommen aus dem Zwischenspeicher und sind sofort da.
+
+### Optional: ElevenLabs für die menschlichste Stimme
+1. Erstelle auf **elevenlabs.io** ein Konto. Der Starter-Tarif kostet ab ca. 5 $/Monat, den aktuellen Preis siehst du dort.
+2. Kopiere unter **Profil → API Keys** einen Schlüssel.
+3. Trag ihn in Render unter **Environment** ein: `ELEVENLABS_API_KEY` = dein Schlüssel. Optional legst du mit `ELEVENLABS_VOICE_ID` eine andere Stimme aus der ElevenLabs-Bibliothek fest. Standard ist „Adam“, eine männliche Stimme, die auch Deutsch spricht.
+4. Tippe auf **Save, rebuild, and deploy**. Vio nutzt dann automatisch ElevenLabs. Ist dein Guthaben aufgebraucht, springt die Gemini-Stimme ein.

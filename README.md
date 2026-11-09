@@ -29,7 +29,7 @@ Vio-Server (Node 22, keine externen Pakete)
 ```bash
 GEMINI_API_KEY=AIza... VIO_INITIAL_PASSWORD=mein-langes-passwort npm run dev
 # → http://localhost:3000
-npm test   # 50 Tests
+npm test   # 53 Tests
 ```
 
 ## Was funktioniert (v0.1) – und was nicht

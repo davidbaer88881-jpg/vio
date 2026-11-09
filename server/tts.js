@@ -28,9 +28,37 @@ export function pcmToWav(pcm, sampleRate = 24000) {
   return Buffer.concat([h, pcm]);
 }
 
+// Kleiner Zwischenspeicher: gleiche Sätze (Begrüßung, „Erledigt!“ …) kommen sofort
+const cache = new Map();
+const CACHE_MAX = 60;
+export function ttsProvider() { return config.elevenKey ? 'elevenlabs' : config.geminiKey ? 'gemini' : null; }
+
 export async function synthesize(text, voice = 'Puck', signal) {
-  if (!config.geminiKey) throw Object.assign(new Error('Kein Gemini-Schlüssel'), { status: 503 });
   const clean = String(text).slice(0, 1500);
+  const key = `${ttsProvider()}|${voice}|${clean}`;
+  if (cache.has(key)) { const v = cache.get(key); cache.delete(key); cache.set(key, v); return v; }
+  let audio;
+  if (config.elevenKey) {
+    try { audio = await elevenlabs(clean, signal); } catch (e) { if (!config.geminiKey) throw e; console.error('ElevenLabs:', e.message); }
+  }
+  if (!audio) audio = await gemini(clean, voice, signal);
+  cache.set(key, audio);
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+  return audio;
+}
+
+async function elevenlabs(text, signal) {
+  const res = await fetch(`${config.elevenBase}/v1/text-to-speech/${encodeURIComponent(config.elevenVoiceId)}?output_format=mp3_44100_64&optimize_streaming_latency=3`, {
+    method: 'POST', signal,
+    headers: { 'content-type': 'application/json', 'xi-api-key': config.elevenKey, accept: 'audio/mpeg' },
+    body: JSON.stringify({ text, model_id: config.elevenModel, language_code: 'de', voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.25, use_speaker_boost: true } }),
+  });
+  if (!res.ok) throw Object.assign(new Error(`ElevenLabs ${res.status}: ${(await res.text()).slice(0, 150)}`), { status: res.status });
+  return { data: Buffer.from(await res.arrayBuffer()), type: 'audio/mpeg' };
+}
+
+async function gemini(clean, voice, signal) {
+  if (!config.geminiKey) throw Object.assign(new Error('Kein Gemini-Schlüssel'), { status: 503 });
   const voiceName = GEMINI_VOICES.some((v) => v.id === voice) ? voice : 'Puck';
   let lastErr;
   for (const model of config.geminiTtsModels) {
@@ -38,7 +66,7 @@ export async function synthesize(text, voice = 'Puck', signal) {
       method: 'POST', signal,
       headers: { 'content-type': 'application/json', 'x-goog-api-key': config.geminiKey },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: `Sprich locker, freundlich und natürlich auf Deutsch:\n${clean}` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Lies den folgenden Text auf Deutsch vor – wie ein gut gelaunter, entspannter Kumpel Mitte dreißig: natürliches Tempo, warme Stimme, keine Übertreibung. Nur den Text sprechen.\n\n${clean}` }] }],
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
@@ -54,9 +82,9 @@ export async function synthesize(text, voice = 'Puck', signal) {
     if (!part) { lastErr = new Error('Gemini TTS lieferte kein Audio'); continue; }
     const buf = Buffer.from(part.inlineData.data, 'base64');
     const mime = String(part.inlineData.mimeType || '');
-    if (mime.includes('wav') || buf.subarray(0, 4).toString() === 'RIFF') return buf;
+    if (mime.includes('wav') || buf.subarray(0, 4).toString() === 'RIFF') return { data: buf, type: 'audio/wav' };
     const rate = Number(mime.match(/rate=(\d+)/)?.[1]) || 24000;
-    return pcmToWav(buf, rate);
+    return { data: pcmToWav(buf, rate), type: 'audio/wav' };
   }
   throw lastErr;
 }

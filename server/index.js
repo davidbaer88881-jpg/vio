@@ -10,7 +10,7 @@ import { restoreBackup, scheduleBackup, flushBackup, backupEnabled } from './bac
 import { runChatTurnCollect } from './chat.js';
 import * as google from './google.js';
 import * as telegram from './telegram.js';
-import { synthesize, GEMINI_VOICES } from './tts.js';
+import { synthesize, GEMINI_VOICES, ttsProvider } from './tts.js';
 import * as tguser from './tguser.js';
 import { transcribe } from './transcribe.js';
 import { startScheduler, buildBriefing, tick } from './scheduler.js';
@@ -19,7 +19,7 @@ import { getConnections } from './connections.js';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.json': 'application/json', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
 };
 
 const SECURITY_HEADERS = {
@@ -69,7 +69,7 @@ async function serveStatic(req, res, pathname) {
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag }); return res.end(); }
     const data = await readFile(file);
     // App-Dateien immer neu prüfen (günstig per ETag), damit Updates sofort ankommen; nur Icons dürfen länger im Cache bleiben
-    const cache = ext === '.png' ? 'public, max-age=86400' : 'no-cache';
+    const cache = ext === '.png' || ext === '.woff2' ? 'public, max-age=2592000' : 'no-cache';
     return send(res, 200, data, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': cache, ETag: etag });
   } catch {
     // SPA-Fallback
@@ -80,6 +80,16 @@ async function serveStatic(req, res, pathname) {
 
 // ---------- App ----------
 const runningTurns = new Map(); // request_id → { ac, convId }
+
+// Termine für die Startseite: höchstens 2,5 s warten, 60 s zwischenspeichern → Startseite bleibt flott
+let eventsCache = { at: 0, data: null };
+async function homeEvents(db) {
+  if (Date.now() - eventsCache.at < 60e3 && eventsCache.data) return eventsCache.data;
+  const timeout = new Promise((r) => setTimeout(() => r(null), 2500));
+  const data = await Promise.race([google.listEvents(db, { max: 8 }).catch(() => null), timeout]);
+  if (data) eventsCache = { at: Date.now(), data };
+  return data ?? eventsCache.data ?? [];
+}
 
 export function createApp(db) {
   const hasUser = () => !!db.prepare('SELECT 1 FROM users LIMIT 1').get();
@@ -150,10 +160,10 @@ export function createApp(db) {
         return json(res, 200, {
           settings: getSettings(db),
           conversations: db.prepare('SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 5').all(),
-          tasks: db.prepare('SELECT id, title, due_at FROM tasks WHERE done = 0 ORDER BY due_at IS NULL, due_at, id LIMIT 5').all(),
+          tasks: db.prepare('SELECT id, title, due_at, repeat FROM tasks WHERE done = 0 ORDER BY due_at IS NULL, due_at, id LIMIT 8').all(),
           pending_facts: db.prepare("SELECT id, text FROM facts WHERE status = 'pending' ORDER BY id").all(),
           connections: getConnections(getSettings(db), db),
-          events: google.googleStatus(db).connected ? await google.listEvents(db, { max: 5 }).catch(() => null) : null,
+          events: google.googleStatus(db).connected ? await homeEvents(db) : null,
         });
       }
 
@@ -192,6 +202,7 @@ export function createApp(db) {
         } finally {
           clearInterval(keepAlive);
           runningTurns.delete(rid);
+          eventsCache.at = 0; // Vio hat evtl. Termine geändert
           scheduleBackup(db);
         }
         return res.end();
@@ -380,13 +391,13 @@ export function createApp(db) {
       }
 
       // --- Stimme ---
-      if (pathname === '/api/voices' && method === 'GET') return json(res, 200, { gemini: config.geminiKey ? GEMINI_VOICES : [] });
+      if (pathname === '/api/voices' && method === 'GET') return json(res, 200, { gemini: config.geminiKey ? GEMINI_VOICES : [], provider: ttsProvider() });
       if (pathname === '/api/tts' && method === 'POST') {
         const { text, voice } = await readJson(req);
         if (!text || String(text).length > 1500) return json(res, 400, { error: 'Text fehlt oder ist zu lang.' });
         try {
-          const wav = await synthesize(text, voice || getSettings(db).gemini_voice);
-          return send(res, 200, wav, { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' });
+          const audio = await synthesize(text, voice || getSettings(db).gemini_voice);
+          return send(res, 200, audio.data, { 'Content-Type': audio.type, 'Cache-Control': 'no-store' });
         } catch (e) {
           console.error('TTS:', e.message);
           return json(res, e.status === 429 ? 429 : 502, { error: e.status === 429 ? 'Sprach-Limit erreicht' : 'Sprachausgabe nicht verfügbar' });
